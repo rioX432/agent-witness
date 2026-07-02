@@ -1,5 +1,9 @@
 # agent-witness
 
+[![CI](https://github.com/rioX432/agent-witness/actions/workflows/ci.yml/badge.svg)](https://github.com/rioX432/agent-witness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/rioX432/agent-witness)](https://github.com/rioX432/agent-witness/releases)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 > A session recorder and audit log for AI coding agents.
 
 `agent-witness init` → use Claude Code as usual → `agent-witness show` replays what the session actually did (tool calls, files, commands) as a TUI timeline, backed by a persistent JSONL audit trail.
@@ -64,9 +68,19 @@ pull the tool toward a metrics dashboard and away from honest observation.
 deliberate cut). Use an external multiplexer — tile `show --follow` panes in Cmux
 or tmux. Recipe: [`docs/recipes/cmux.md`](docs/recipes/cmux.md).
 
-## Install
+## How it works
 
-> Pre-v0.1: no release is published yet. These paths become available once the first tag is pushed.
+Claude Code hooks (`PreToolUse` / `PostToolUse` / `Stop`) pipe each event into
+`agent-witness emit`, which forwards it to a unix socket — or, when no daemon is
+running, writes straight to the JSONL store. **No daemon required**; `agent-witness
+watch` is optional. The raw hook payload is preserved verbatim next to every
+normalized event, so the record is always traceable to its evidence.
+
+A best-effort transcript adapter fills in what hooks never surface (assistant
+prose between tool calls) as `observed`-attribution events — disable with
+`--no-transcript` for a hooks-only canonical record. Details: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Install
 
 ```bash
 # Homebrew (macOS / Linuxbrew)
@@ -93,3 +107,12 @@ Prebuilt binaries are published for macOS (arm64, x86_64) and Linux (x86_64, arm
 ## v0.1 scope
 
 hooks receiver + JSONL session store + TUI timeline/replay + markdown report. See NON-GOALS.md for deliberate cuts.
+
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — event flow, workspace layout, honesty invariants
+- [CHANGELOG.md](CHANGELOG.md) — release history
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, conventions, fixture rules
+- [SECURITY.md](SECURITY.md) — what this tool is *not* (a security boundary)
+- [NON-GOALS.md](NON-GOALS.md) — deliberate scope cuts
+- [docs/adr/](docs/adr/) — architecture decision records

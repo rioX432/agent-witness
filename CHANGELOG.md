@@ -1,0 +1,38 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.0.2] - 2026-07-02
+
+### Added
+- Session selectors and no-arg defaults for `show`/`report`: latest-for-cwd default with honest fallback note, `@last`, `@N`, `@project:<substring>`, `@live:<n>`, unique id-prefix matching, and an interactive `show --pick` session picker (9c4cc6d)
+- Live sessions: store-scan liveness rule (no daemon), `ls` STATE column + `--live` filter, `show --follow` live tail unified with the in-TUI `f` toggle, and an htop-like `top` view with Enter-to-drill-down (4e508b1)
+- Cmux/tmux multi-session monitoring recipe (`docs/recipes/cmux.md`) (4e508b1)
+
+## [0.0.1] - 2026-07-02
+
+First test release — validates the full distribution pipeline (GitHub Release,
+Homebrew tap, cargo-binstall, shell installer). Functionally this is the complete
+v0.1 feature set.
+
+### Added
+- `AgentEvent` model (schema v1, attribution `direct | observed | inferred` + confidence) and append-only JSONL session store with corrupt-line skip-and-count (a0cafce)
+- Golden fixture pipeline: real-session capture script, sanitizer with mechanical + manual checks, and fixture lint tests that double as a hook-payload canary (b0c5004)
+- Hooks receiver: `emit` bridge (stdin → unix socket with persistence ack, direct-store fallback so no daemon is required) and `watch` server; raw hook payloads preserved verbatim alongside normalized events (47006f6)
+- `init`: idempotent, merge-safe registration of recording hooks in `~/.claude/settings.json` (or `./.claude/settings.json` with `--project`), with timestamped backup and `--remove` (9f94a1b)
+- Transcript adapter (best-effort, versioned, feature-flagged): extracts assistant prose hooks never surface, as `observed`-attribution events with honest skip accounting; `--no-transcript` opt-out (2d28b5c)
+- TUI timeline viewer (ratatui): session `ls`, replay with tool-call pairing, detail pane, live follow; golden-tested via `TestBackend` (b1ff7b1)
+- `report`: shareable markdown/JSON session audit with a mandatory observation-scope disclaimer (9f79d6a)
+
+### Infrastructure
+- Workspace scaffold, `just verify` gate, CI mirroring the local gate, ADRs (5e26c33, 4e056ad)
+- Distribution via dist (cargo-dist): release CI on version tags, Homebrew tap, cargo-binstall metadata, shell installer (df46a90)
+
+[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/rioX432/agent-witness/compare/v0.0.1...v0.0.2
+[0.0.1]: https://github.com/rioX432/agent-witness/releases/tag/v0.0.1
