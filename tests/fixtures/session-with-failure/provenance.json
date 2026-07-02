@@ -1,0 +1,19 @@
+{
+  "scenario": "session-with-failure",
+  "provenance": "real-captured",
+  "description": "Failure flow: a Bash tool call fails (missing file), then a diagnostic `ls -la` succeeds.",
+  "captured_with": "Claude Code 2.1.198",
+  "captured_on": "2026-07-02",
+  "hook_payload_schema": 1,
+  "sanitized_by": "tools/fixtures/sanitize.py",
+  "event_count": 6,
+  "event_sequence": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse(Bash, cat missing-config.toml)",
+    "PreToolUse(Bash, ls -la)",
+    "PostToolUse(Bash, ls -la)",
+    "Stop"
+  ],
+  "notes": "KEY OBSERVED BEHAVIOR: the first Bash call exits non-zero and has NO matching PostToolUse. In Claude Code 2.1.198 a failed Bash tool call does not fire PostToolUse; the failure is only observable as a PreToolUse without a matching PostToolUse (correlated by tool_use_id), plus the Stop message. This is exactly the observation gap ADR-0001 documents. Fixtures must preserve this asymmetry, not paper over it (ADR-0002 honesty)."
+}

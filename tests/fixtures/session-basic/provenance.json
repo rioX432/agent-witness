@@ -1,0 +1,20 @@
+{
+  "scenario": "session-basic",
+  "provenance": "real-captured",
+  "description": "Normal flow: agent writes a small Rust file, then runs `rustc --version`.",
+  "captured_with": "Claude Code 2.1.198",
+  "captured_on": "2026-07-02",
+  "hook_payload_schema": 1,
+  "sanitized_by": "tools/fixtures/sanitize.py",
+  "event_count": 7,
+  "event_sequence": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse(Write)",
+    "PostToolUse(Write)",
+    "PreToolUse(Bash)",
+    "PostToolUse(Bash)",
+    "Stop"
+  ],
+  "notes": "Both tool calls succeed, so each PreToolUse has a matching PostToolUse."
+}
