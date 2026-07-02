@@ -47,7 +47,7 @@ pub fn resolve() -> Result<Paths> {
 
 /// The current user's home directory from `$HOME`. v0.1 targets unix; Windows is
 /// best-effort only (see CLAUDE.md), so we do not consult `%USERPROFILE%` here.
-fn home_dir() -> Result<PathBuf> {
+pub(crate) fn home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
