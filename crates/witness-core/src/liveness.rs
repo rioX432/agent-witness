@@ -3,8 +3,20 @@
 //!
 //! A session is *live* when all three hold:
 //! 1. we have seen it start (a `SessionStart` event),
-//! 2. we have **not** seen it stop (no `Stop` event), and
-//! 3. its last observed activity is within a recency window.
+//! 2. its **last** observed event is not a `Stop` (it is mid-turn), and
+//! 3. that last observed activity is within a recency window.
+//!
+//! Stop is per-turn, not per-session (issue #23): Claude Code's `Stop` hook
+//! fires at the end of **every** assistant turn, not at session end. There is no
+//! `SessionEnd` hook. So a live interactive session accumulates many `Stop`
+//! events with more events after each one; treating "any observed `Stop`" as
+//! terminal (the pre-#23 rule) made every interactive session read idle after
+//! its first turn. The verdict therefore keys on whether the *last* event is a
+//! `Stop` (between turns → idle) rather than on whether one was ever seen:
+//! - last event is not `Stop`, within window → **live** (mid-turn)
+//! - last event is `Stop` → **idle** (between turns; a later event returns it to
+//!   live)
+//! - last event beyond the window → **idle/stale** (as before)
 //!
 //! Determinism (a Core Value): the window is configurable (default
 //! [`DEFAULT_LIVE_WINDOW_MS`]) and "now" is injected, never read from the
@@ -12,9 +24,9 @@
 //! in tests.
 //!
 //! Honesty (ADR-0002): liveness is *inferred* from a store scan, not proven. A
-//! crashed agent that never emitted `Stop` reads as live until its window
-//! lapses, then flips to idle — documented, not papered over. The rule requires
-//! no daemon: it is derivable from the JSONL store alone (issue #19).
+//! crashed agent whose last event was not a `Stop` reads as live until its
+//! window lapses, then flips to idle — documented, not papered over. The rule
+//! requires no daemon: it is derivable from the JSONL store alone (issue #19).
 
 /// Default liveness window in milliseconds: a started, unstopped session whose
 /// last event is within this span of "now" is treated as live (5 minutes).
@@ -26,8 +38,10 @@ pub const DEFAULT_LIVE_WINDOW_MS: i64 = 5 * 60 * 1000;
 pub struct LivenessInputs {
     /// A `SessionStart` event was observed.
     pub has_start: bool,
-    /// A `Stop` event was observed (terminal — no `SessionEnd` hook exists today).
-    pub has_stop: bool,
+    /// The session's **last** observed event is a `Stop` (i.e. it is currently
+    /// between turns). Not "a `Stop` was ever seen": `Stop` fires per turn, so a
+    /// live session has many, each followed by more events (issue #23).
+    pub last_is_stop: bool,
     /// Time of the last observed event, if any.
     pub last_event_ts: Option<i64>,
 }
@@ -36,7 +50,7 @@ pub struct LivenessInputs {
 /// recency `window_ms`. Pure and total (`saturating_sub` guards a clock that
 /// appears to move backwards).
 pub fn is_live(inputs: LivenessInputs, now_ms: i64, window_ms: i64) -> bool {
-    if !inputs.has_start || inputs.has_stop {
+    if !inputs.has_start || inputs.last_is_stop {
         return false;
     }
     match inputs.last_event_ts {
@@ -51,25 +65,36 @@ mod tests {
 
     const NOW: i64 = 10_000_000;
 
-    fn inputs(has_start: bool, has_stop: bool, last: Option<i64>) -> LivenessInputs {
+    fn inputs(has_start: bool, last_is_stop: bool, last: Option<i64>) -> LivenessInputs {
         LivenessInputs {
             has_start,
-            has_stop,
+            last_is_stop,
             last_event_ts: last,
         }
     }
 
     #[test]
-    fn live_when_started_unstopped_and_recent() {
-        // Last activity 1s ago, well inside the default window.
+    fn live_when_started_mid_turn_and_recent() {
+        // Last event is not a Stop (mid-turn), 1s ago, inside the window.
         let i = inputs(true, false, Some(NOW - 1_000));
         assert!(is_live(i, NOW, DEFAULT_LIVE_WINDOW_MS));
     }
 
     #[test]
-    fn stopped_session_is_not_live_even_if_recent() {
+    fn between_turns_is_idle_even_if_recent() {
+        // Last event IS a Stop: the turn just ended, so idle even though recent.
         let i = inputs(true, true, Some(NOW));
         assert!(!is_live(i, NOW, DEFAULT_LIVE_WINDOW_MS));
+    }
+
+    #[test]
+    fn new_event_after_stop_returns_to_live() {
+        // Issue #23: a Stop is per-turn, not terminal. Once the next turn's event
+        // arrives the last event is no longer a Stop, so the session is live again.
+        let between_turns = inputs(true, true, Some(NOW - 1_000));
+        assert!(!is_live(between_turns, NOW, DEFAULT_LIVE_WINDOW_MS));
+        let next_turn_started = inputs(true, false, Some(NOW - 1_000));
+        assert!(is_live(next_turn_started, NOW, DEFAULT_LIVE_WINDOW_MS));
     }
 
     #[test]

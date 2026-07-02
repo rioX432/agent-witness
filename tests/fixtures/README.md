@@ -22,6 +22,7 @@ a synthetic fixture as real — honest observation is the project's Core Value.
 |---|---|---|
 | `session-basic/` | Write a file, run `rustc --version`; both succeed | Happy path: every PreToolUse has a matching PostToolUse |
 | `session-with-failure/` | A Bash call fails (missing file), a diagnostic succeeds | Failure path: a failed Bash call fires **no** PostToolUse (see below) |
+| `session-multiturn/` | Two turns in one session (turn 2 resumed via `--continue`): write then edit a file | Liveness canary (issue #23): a `Stop` at index 4 is followed by more events, proving `Stop` fires per-turn, not per-session |
 
 ## Transcript fixture (issue #4)
 

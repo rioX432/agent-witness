@@ -9,7 +9,8 @@
 //! that reads the store and delegates every judgement to [`summarize`].
 //!
 //! Liveness note: the `@live` selector delegates to [`crate::liveness`] (issue
-//! #19) — started, not stopped, and last event within
+//! #19) — started, last event is not a `Stop` (mid-turn, not between turns —
+//! `Stop` is per-turn, issue #23), and that event is within
 //! [`DEFAULT_LIVE_WINDOW_MS`]. Honesty (ADR-0002): liveness is inferred, never
 //! proven.
 
@@ -50,8 +51,11 @@ pub struct SessionSummary {
     pub cwds: Vec<String>,
     /// Whether a `SessionStart` event was observed (used by the liveness rule).
     pub has_start: bool,
-    /// Whether a `Stop` event was observed (used by the liveness rule).
-    pub has_stop: bool,
+    /// Whether the **last** observed event is a `Stop`, i.e. the session is
+    /// currently between turns (used by the liveness rule). `Stop` is per-turn,
+    /// not terminal, so this tracks the last event's kind — not whether any
+    /// `Stop` was ever seen (issue #23).
+    pub last_is_stop: bool,
     /// Total parsed events.
     pub event_count: usize,
     /// Number of tool invocations (`ToolCall` events).
@@ -74,7 +78,7 @@ impl SessionSummary {
     pub fn liveness_inputs(&self) -> LivenessInputs {
         LivenessInputs {
             has_start: self.has_start,
-            has_stop: self.has_stop,
+            last_is_stop: self.last_is_stop,
             last_event_ts: self.last_event_ts,
         }
     }
@@ -140,7 +144,6 @@ pub enum SelectorError {
 pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> SessionSummary {
     let mut cwds: Vec<String> = Vec::new();
     let mut has_start = false;
-    let mut has_stop = false;
     let mut tool_calls = 0;
     for ev in events {
         if let Some(cwd) = ev.payload.get(FIELD_CWD).and_then(|v| v.as_str()) {
@@ -150,11 +153,13 @@ pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> Se
         }
         match ev.kind {
             EventKind::SessionStart => has_start = true,
-            EventKind::Stop => has_stop = true,
             EventKind::ToolCall => tool_calls += 1,
             _ => {}
         }
     }
+    // `Stop` is per-turn, not terminal (issue #23): only the last event's kind
+    // tells us whether the session is between turns.
+    let last_is_stop = events.last().is_some_and(|e| e.kind == EventKind::Stop);
     SessionSummary {
         id: id.to_string(),
         created_ts,
@@ -162,7 +167,7 @@ pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> Se
         last_event_ts: events.last().map(|e| e.ts),
         cwds,
         has_start,
-        has_stop,
+        last_is_stop,
         event_count: events.len(),
         tool_calls,
     }
@@ -437,7 +442,8 @@ mod tests {
         let s = summarize("sess", Some(0), &events);
         assert_eq!(s.cwds, vec!["/a/proj"]);
         assert!(s.has_start);
-        assert!(s.has_stop);
+        // The last event here is the Stop, so the session reads as between-turns.
+        assert!(s.last_is_stop);
         assert_eq!(s.tool_calls, 1);
         assert_eq!(s.event_count, 4);
         assert_eq!(s.first_event_ts, Some(1));
