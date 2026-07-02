@@ -34,6 +34,7 @@ pub async fn run_watch<F>(
     socket: &Path,
     sessions_root: &Path,
     clock: Arc<dyn Clock + Send + Sync>,
+    transcript_enabled: bool,
     shutdown: F,
 ) -> Result<()>
 where
@@ -56,7 +57,7 @@ where
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
-                        handle_connection(stream, &mut receiver, clock.as_ref()).await;
+                        handle_connection(stream, &mut receiver, clock.as_ref(), transcript_enabled).await;
                     }
                     Err(e) => {
                         // Transient accept error: log and keep serving.
@@ -84,6 +85,7 @@ async fn handle_connection(
     receiver: &mut Receiver,
     // `+ Sync` keeps this future Send so run_watch can run under tokio::spawn.
     clock: &(dyn Clock + Sync),
+    transcript_enabled: bool,
 ) {
     let mut bytes = Vec::new();
     if let Err(e) = stream.read_to_end(&mut bytes).await {
@@ -101,6 +103,9 @@ async fn handle_connection(
             if let Err(e) = stream.write_all(&[ACK_BYTE]).await {
                 eprintln!("agent-witness watch: ack write error: {e}");
             }
+            // Best-effort transcript supplement after the canonical hook is
+            // durable; isolated so it never affects the ack or recording.
+            crate::transcript::ingest_on_stop(receiver, &payload, clock, transcript_enabled);
         }
         Err(e) => {
             eprintln!("agent-witness watch: ingest error: {e}");

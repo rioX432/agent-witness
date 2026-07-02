@@ -23,6 +23,17 @@ a synthetic fixture as real — honest observation is the project's Core Value.
 | `session-basic/` | Write a file, run `rustc --version`; both succeed | Happy path: every PreToolUse has a matching PostToolUse |
 | `session-with-failure/` | A Bash call fails (missing file), a diagnostic succeeds | Failure path: a failed Bash call fires **no** PostToolUse (see below) |
 
+## Transcript fixture (issue #4)
+
+`session-basic/transcript.jsonl` is a sanitized, minimal subset of the **same**
+real session's transcript JSONL, used to test the best-effort transcript adapter
+(`witness-core` `transcript` module). Unlike `hooks.jsonl` (the canonical hook
+stdin record), the transcript's internal schema is **not a stable contract** — the
+adapter is versioned and best-effort. The adapter extracts only the assistant
+*text* lines (context hooks never surface) as `Observed` events; every other line
+type is recognized-but-skipped and counted in `TranscriptStats`. Provenance and
+line inventory live in `session-basic/provenance.json` under `transcript`.
+
 ### Observed failure behavior (Claude Code 2.1.198)
 
 A Bash tool call that exits non-zero produces a `PreToolUse` with **no matching

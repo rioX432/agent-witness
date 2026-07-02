@@ -29,9 +29,9 @@ enum Command {
     Init(InitArgs),
     /// Claude Code hooks command: read one hook payload on stdin and record it
     /// (forwards to the `watch` daemon, or writes to the store if none is up).
-    Emit,
+    Emit(TranscriptArgs),
     /// Run the unix socket server: receive hook payloads, normalize, and store.
-    Watch,
+    Watch(TranscriptArgs),
 }
 
 /// Arguments for `agent-witness init`.
@@ -45,6 +45,15 @@ struct InitArgs {
     remove: bool,
 }
 
+/// Flags shared by the recording commands controlling the transcript adapter.
+#[derive(Debug, Args)]
+struct TranscriptArgs {
+    /// Disable the best-effort transcript adapter (default: enabled). When off,
+    /// recording is hooks-only — the canonical source is unaffected.
+    #[arg(long)]
+    no_transcript: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -55,18 +64,30 @@ async fn main() -> Result<()> {
             let report = init::run_init(&path, args.remove, &SystemClock)?;
             report_init(&path.display().to_string(), &report);
         }
-        Command::Emit => {
+        Command::Emit(args) => {
             let paths = paths::resolve()?;
             let mut payload = String::new();
             tokio::io::stdin().read_to_string(&mut payload).await?;
-            emit::run_emit(&paths.socket, &paths.sessions_root, payload).await?;
+            emit::run_emit(
+                &paths.socket,
+                &paths.sessions_root,
+                payload,
+                !args.no_transcript,
+            )
+            .await?;
         }
-        Command::Watch => {
+        Command::Watch(args) => {
             let paths = paths::resolve()?;
             let clock: Arc<dyn Clock + Send + Sync> = Arc::new(SystemClock);
-            watch::run_watch(&paths.socket, &paths.sessions_root, clock, async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
+            watch::run_watch(
+                &paths.socket,
+                &paths.sessions_root,
+                clock,
+                !args.no_transcript,
+                async {
+                    let _ = tokio::signal::ctrl_c().await;
+                },
+            )
             .await?;
         }
     }

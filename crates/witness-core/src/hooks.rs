@@ -28,7 +28,9 @@ const HOOK_USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
 const HOOK_PRE_TOOL_USE: &str = "PreToolUse";
 const HOOK_POST_TOOL_USE: &str = "PostToolUse";
 const HOOK_POST_TOOL_USE_FAILURE: &str = "PostToolUseFailure";
-const HOOK_STOP: &str = "Stop";
+/// `hook_event_name` marking the end of a turn. Public so the transcript bridge
+/// can trigger a supplementary transcript read once the session is complete.
+pub const HOOK_STOP: &str = "Stop";
 
 /// Why a payload could not be normalized. The receiver turns these into an
 /// [`EventKind::Error`] event rather than dropping the input.
@@ -55,10 +57,25 @@ pub enum NormalizeError {
 pub const FIELD_SESSION_ID: &str = "session_id";
 /// Field name carrying the hook event name on every hook payload.
 pub const FIELD_HOOK_EVENT_NAME: &str = "hook_event_name";
+/// Field name carrying the per-session transcript file path. This is the only
+/// sanctioned way to locate the transcript — never glob `~/.claude/projects`
+/// (CLAUDE.md, ADR-0001).
+pub const FIELD_TRANSCRIPT_PATH: &str = "transcript_path";
 
 /// Extract the session id from a (parsed) hook payload, if present and a string.
 pub fn session_id_of(hook: &Value) -> Option<&str> {
     hook.get(FIELD_SESSION_ID).and_then(Value::as_str)
+}
+
+/// Extract the `hook_event_name` from a (parsed) hook payload, if present.
+pub fn hook_event_name_of(hook: &Value) -> Option<&str> {
+    hook.get(FIELD_HOOK_EVENT_NAME).and_then(Value::as_str)
+}
+
+/// Extract this session's `transcript_path` from a (parsed) hook payload, if
+/// present. The transcript adapter reads exactly this file, never a glob.
+pub fn transcript_path_of(hook: &Value) -> Option<&str> {
+    hook.get(FIELD_TRANSCRIPT_PATH).and_then(Value::as_str)
 }
 
 /// Normalize one parsed hook payload into an [`AgentEvent`].
@@ -259,6 +276,27 @@ mod tests {
             normalize(&json!([1, 2]), TS, "r"),
             Err(NormalizeError::NotAnObject)
         );
+    }
+
+    #[test]
+    fn accessors_read_common_fields() {
+        let hook = parse(
+            r#"{"hook_event_name":"Stop","session_id":"s1",
+                "transcript_path":"/home/user/.claude/projects/x/s1.jsonl"}"#,
+        );
+        assert_eq!(hook_event_name_of(&hook), Some(HOOK_STOP));
+        assert_eq!(session_id_of(&hook), Some("s1"));
+        assert_eq!(
+            transcript_path_of(&hook),
+            Some("/home/user/.claude/projects/x/s1.jsonl")
+        );
+    }
+
+    #[test]
+    fn accessors_return_none_when_absent() {
+        let hook = parse(r#"{"hook_event_name":"Stop"}"#);
+        assert_eq!(transcript_path_of(&hook), None);
+        assert_eq!(session_id_of(&hook), None);
     }
 
     #[test]

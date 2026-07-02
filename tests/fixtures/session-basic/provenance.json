@@ -16,5 +16,24 @@
     "PostToolUse(Bash)",
     "Stop"
   ],
-  "notes": "Both tool calls succeed, so each PreToolUse has a matching PostToolUse."
+  "notes": "Both tool calls succeed, so each PreToolUse has a matching PostToolUse.",
+  "transcript": {
+    "file": "transcript.jsonl",
+    "provenance": "real-captured",
+    "description": "Sanitized minimal subset of the same session's transcript JSONL (issue #4 adapter fixture). The transcript internal schema is NOT a stable contract; this is a best-effort golden input.",
+    "sanitized_by": "hand sanitizer derived from tools/fixtures/sanitize.py policy (paths/uuids/ids masked)",
+    "line_count": 9,
+    "line_types": [
+      "queue-operation",
+      "user(prompt)",
+      "assistant(text)",
+      "assistant(tool_use)",
+      "user(tool_result)",
+      "assistant(tool_use)",
+      "user(tool_result)",
+      "assistant(text)",
+      "last-prompt"
+    ],
+    "adapter_extracts": "the 2 assistant(text) lines -> Observed transcript events; all other line types are recognized-but-skipped."
+  }
 }

@@ -11,14 +11,15 @@
 //! It is an adapter (edge), so it reads a caller-injected [`Clock`]; the pure
 //! normalization it delegates to stays clock-free.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::clock::Clock;
-use crate::event::EventKind;
+use crate::event::{EventKind, Source};
 use crate::hooks::{self, NormalizeError, UNKNOWN_SESSION};
 use crate::store::{self, RawRecord, SessionStore, StoreError};
+use crate::transcript::{self, TranscriptStats};
 
 /// Prefix for generated `raw_ref` values (`raw-0`, `raw-1`, …).
 const RAW_REF_PREFIX: &str = "raw-";
@@ -41,6 +42,21 @@ pub struct Ingested {
     pub raw_ref: String,
     /// Kind of the normalized event that was written.
     pub kind: EventKind,
+}
+
+/// Outcome of a transcript ingest. `stats` reports what the transcript parser
+/// saw (honest skip accounting); `appended` / `skipped_duplicates` report what
+/// this call actually wrote after idempotent de-duplication against the store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptIngested {
+    /// Session the supplementary events were written under.
+    pub session: String,
+    /// How the transcript parser classified every line.
+    pub stats: TranscriptStats,
+    /// Supplementary events newly appended by this call.
+    pub appended: usize,
+    /// Parsed events already present in the store (skipped to stay idempotent).
+    pub skipped_duplicates: usize,
 }
 
 /// Ingests hook payloads into a [`SessionStore`], assigning monotonic
@@ -126,6 +142,62 @@ impl Receiver {
             session,
             raw_ref,
             kind: event.kind,
+        })
+    }
+
+    /// Ingest supplementary events from a session's transcript contents.
+    ///
+    /// Best-effort and non-canonical: transcript events are
+    /// [`crate::Attribution::Observed`], appended alongside the canonical hook
+    /// events. Idempotent — events already present (matched by
+    /// `raw_event_ref`) are skipped, so re-reading the same transcript (e.g. a
+    /// duplicated `Stop`, or the `emit` fallback re-running after a lost ack)
+    /// never double-writes. No raw record is written: the transcript file itself
+    /// is the raw evidence, referenced by `transcript:<uuid>`.
+    ///
+    /// Returns `Err` only on genuine store I/O (including an invalid session id);
+    /// a malformed transcript line is counted in the returned stats, not fatal.
+    pub fn ingest_transcript(
+        &mut self,
+        session: &str,
+        transcript_content: &str,
+        clock: &dyn Clock,
+    ) -> Result<TranscriptIngested, IngestError> {
+        let ts = clock.now_ms();
+        let read = transcript::parse_transcript(transcript_content, session, ts);
+
+        // Seed the de-dup set from transcript events already on disk. `read`
+        // validates the session id, so an unsafe id fails here (not mid-write).
+        let existing = self.store.read(session)?;
+        let mut seen: HashSet<String> = existing
+            .events
+            .iter()
+            .filter(|e| e.source == Source::Transcript)
+            .filter_map(|e| e.raw_event_ref.clone())
+            .collect();
+
+        let mut appended = 0;
+        let mut skipped_duplicates = 0;
+        if !read.events.is_empty() {
+            let mut writer = self.store.open(session, ts)?;
+            for event in &read.events {
+                // A ref-less event cannot be de-duplicated; append it (rare).
+                if let Some(reference) = &event.raw_event_ref {
+                    if !seen.insert(reference.clone()) {
+                        skipped_duplicates += 1;
+                        continue;
+                    }
+                }
+                writer.append(event)?;
+                appended += 1;
+            }
+        }
+
+        Ok(TranscriptIngested {
+            session: session.to_string(),
+            stats: read.stats,
+            appended,
+            skipped_duplicates,
         })
     }
 
@@ -341,6 +413,85 @@ mod tests {
             .unwrap();
         assert_eq!(out.session, UNKNOWN_SESSION);
         assert_eq!(out.kind, EventKind::Error);
+    }
+
+    const ASSISTANT_LINE_A: &str = r#"{"type":"assistant","uuid":"a","timestamp":"2026-07-02T02:36:29.167Z","message":{"content":[{"type":"text","text":"first"}]}}"#;
+    const ASSISTANT_LINE_B: &str = r#"{"type":"assistant","uuid":"b","message":{"content":[{"type":"text","text":"second"}]}}"#;
+
+    #[test]
+    fn ingest_transcript_appends_observed_events_without_raw_records() {
+        let (_tmp, mut rx) = receiver();
+        let content = format!("{ASSISTANT_LINE_A}\n{ASSISTANT_LINE_B}");
+        let out = rx
+            .ingest_transcript("s1", &content, &FixedClock(TS))
+            .unwrap();
+
+        assert_eq!(out.appended, 2);
+        assert_eq!(out.skipped_duplicates, 0);
+        assert_eq!(out.stats.events_extracted, 2);
+
+        let events = rx.store().read("s1").unwrap();
+        assert_eq!(events.events.len(), 2);
+        for ev in &events.events {
+            assert_eq!(ev.source, crate::event::Source::Transcript);
+            assert_eq!(ev.attribution, Attribution::Observed);
+        }
+        // The transcript file is the raw evidence; no raw records are written.
+        assert!(rx.store().read_raw("s1").unwrap().records.is_empty());
+    }
+
+    #[test]
+    fn ingest_transcript_is_idempotent() {
+        let (_tmp, mut rx) = receiver();
+        let content = format!("{ASSISTANT_LINE_A}\n{ASSISTANT_LINE_B}");
+        rx.ingest_transcript("s1", &content, &FixedClock(TS))
+            .unwrap();
+        let second = rx
+            .ingest_transcript("s1", &content, &FixedClock(TS))
+            .unwrap();
+
+        assert_eq!(second.appended, 0);
+        assert_eq!(second.skipped_duplicates, 2);
+        // Still only two events after re-ingesting the same transcript.
+        assert_eq!(rx.store().read("s1").unwrap().events.len(), 2);
+    }
+
+    #[test]
+    fn ingest_transcript_coexists_with_hook_events() {
+        let (_tmp, mut rx) = receiver();
+        rx.ingest(
+            r#"{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":false}"#,
+            &FixedClock(TS),
+        )
+        .unwrap();
+        rx.ingest_transcript("s1", ASSISTANT_LINE_A, &FixedClock(TS))
+            .unwrap();
+
+        let events = rx.store().read("s1").unwrap();
+        assert_eq!(events.events.len(), 2);
+        let sources: Vec<_> = events.events.iter().map(|e| e.source).collect();
+        assert!(sources.contains(&crate::event::Source::Hooks));
+        assert!(sources.contains(&crate::event::Source::Transcript));
+    }
+
+    #[test]
+    fn ingest_transcript_rejects_invalid_session_id() {
+        let (_tmp, mut rx) = receiver();
+        let err = rx
+            .ingest_transcript("../escape", ASSISTANT_LINE_A, &FixedClock(TS))
+            .unwrap_err();
+        assert!(matches!(err, IngestError::Store(_)));
+    }
+
+    #[test]
+    fn ingest_transcript_with_no_events_writes_nothing() {
+        let (_tmp, mut rx) = receiver();
+        let out = rx
+            .ingest_transcript("s1", "{broken\n{\"type\":\"user\"}", &FixedClock(TS))
+            .unwrap();
+        assert_eq!(out.appended, 0);
+        assert_eq!(out.stats.total_lines, 2);
+        assert!(rx.store().read("s1").unwrap().events.is_empty());
     }
 
     #[test]

@@ -13,6 +13,9 @@ use agent_witness_core::{Attribution, Clock, EventKind, FixedClock, SessionStore
 use tokio::sync::oneshot;
 
 const FIXED_TS: i64 = 1_700_000_000_000;
+/// These tests exercise the hooks pipeline only; the transcript adapter is
+/// covered separately in `transcript_pipeline.rs`.
+const NO_TRANSCRIPT: bool = false;
 /// Upper bound for the socket-path poll loop before we declare a hang.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -113,7 +116,7 @@ async fn fallback_path_records_all_fixtures() {
         let absent_socket = tmp.path().join("no-such.sock");
 
         for line in fixture_lines(scenario) {
-            let outcome = emit::run_emit(&absent_socket, &sessions_root, line)
+            let outcome = emit::run_emit(&absent_socket, &sessions_root, line, NO_TRANSCRIPT)
                 .await
                 .expect("emit fallback");
             assert_eq!(outcome, emit::EmitOutcome::Fallback, "{scenario}");
@@ -136,7 +139,7 @@ async fn socket_path_records_all_fixtures() {
             let socket = socket.clone();
             let sessions_root = sessions_root.clone();
             tokio::spawn(async move {
-                watch::run_watch(&socket, &sessions_root, clock, async {
+                watch::run_watch(&socket, &sessions_root, clock, NO_TRANSCRIPT, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -147,7 +150,7 @@ async fn socket_path_records_all_fixtures() {
 
         let lines = fixture_lines(scenario);
         for line in &lines {
-            let outcome = emit::run_emit(&socket, &sessions_root, line.clone())
+            let outcome = emit::run_emit(&socket, &sessions_root, line.clone(), NO_TRANSCRIPT)
                 .await
                 .expect("emit forward");
             assert_eq!(outcome, emit::EmitOutcome::Forwarded, "{scenario}");
@@ -181,7 +184,7 @@ async fn no_ack_from_daemon_triggers_fallback() {
     });
 
     let line = fixture_lines("session-basic").remove(0);
-    let outcome = emit::run_emit(&socket, &sessions_root, line.clone())
+    let outcome = emit::run_emit(&socket, &sessions_root, line.clone(), NO_TRANSCRIPT)
         .await
         .expect("emit must fall back, not fail");
     assert_eq!(outcome, emit::EmitOutcome::Fallback);
@@ -204,6 +207,7 @@ async fn malformed_json_is_recorded_not_crashed() {
         &absent_socket,
         &sessions_root,
         "{ not json at all".to_string(),
+        NO_TRANSCRIPT,
     )
     .await
     .expect("emit must not crash on malformed input");
