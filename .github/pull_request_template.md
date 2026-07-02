@@ -1,23 +1,18 @@
 ## Description
-<!-- What changed and why -->
+
+<!-- What changed and why. -->
 
 ## Related Issue
-<!-- #XX or N/A -->
 
-<!--
-## Screenshots / Video
+Closes #
 
-## Test Plan
-- [ ] Unit tests added/updated
-- [ ] UI tested on iOS simulator
-- [ ] UI tested on Android emulator
-- [ ] Dark mode verified
-- [ ] Accessibility verified
+## Design decision note
 
-## Checklist
-- [ ] CLAUDE.md rules followed
-- [ ] No hardcoded strings (all externalized)
-- [ ] No `!!` or force unwrap
-- [ ] No `GlobalScope`
-- [ ] Error handling complete
--->
+<!-- The one non-obvious choice this PR makes, and why. (Launch-article material — one short paragraph.) -->
+
+## Verification
+
+- [ ] `just verify` is green (fmt + clippy `-D warnings` + build + nextest)
+- [ ] New behavior is covered by tests (golden/TestBackend for TUI, fixture-driven where applicable)
+- [ ] If fixtures were added/changed: sanitized via `tools/fixtures/`, checklist walked, `provenance.json` truthful
+- [ ] Honesty invariants intact (attribution, corrupt-line counts, report disclaimer)
