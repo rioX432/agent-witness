@@ -12,6 +12,7 @@ pub mod pick;
 pub mod report;
 pub mod timefmt;
 pub mod timeline;
+pub mod top;
 pub mod transcript;
 pub mod tui;
 pub mod watch;

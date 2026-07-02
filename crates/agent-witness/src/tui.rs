@@ -339,11 +339,30 @@ fn source_word(source: Source) -> &'static str {
     }
 }
 
+/// Re-read the session and refresh the app if the log grew or gained corrupt
+/// lines (one live-follow step). Returns whether the app was updated. Shared by
+/// the run loop and the follow integration test so both exercise the same
+/// grow-and-refresh logic (issue #19).
+pub fn poll_update(app: &mut TuiApp, store: &SessionStore, session_id: &str) -> Result<bool> {
+    let fresh = store.read(session_id)?;
+    // Only rebuild when the log actually grew or gained corrupt lines, to avoid
+    // needless churn while idle.
+    if fresh.events.len() != app.event_count || fresh.skipped_lines != app.skipped_lines {
+        app.update(&fresh);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 /// Run the interactive viewer against a stored session. Owns the terminal
-/// lifecycle and the live-follow polling loop.
-pub fn run_show(store: &SessionStore, session_id: &str) -> Result<()> {
+/// lifecycle and the live-follow polling loop. When `follow` is set the viewer
+/// starts in tail mode (unifies `show --follow` with the in-TUI `f` toggle —
+/// issue #19).
+pub fn run_show(store: &SessionStore, session_id: &str, follow: bool) -> Result<()> {
     let read = store.read(session_id)?;
     let mut app = TuiApp::new(session_id, &read);
+    app.follow = follow;
 
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app, store, session_id);
@@ -373,12 +392,7 @@ fn run_loop(
         }
 
         if app.follow {
-            let fresh = store.read(session_id)?;
-            // Only rebuild when the log actually grew or gained corrupt lines,
-            // to avoid needless churn while idle.
-            if fresh.events.len() != app.event_count || fresh.skipped_lines != app.skipped_lines {
-                app.update(&fresh);
-            }
+            poll_update(app, store, session_id)?;
         }
     }
     Ok(())

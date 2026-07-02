@@ -8,17 +8,14 @@
 //! and reproducible. The only I/O lives in [`collect_summaries`], a thin wrapper
 //! that reads the store and delegates every judgement to [`summarize`].
 //!
-//! Liveness note: the `@live` selector uses a **provisional** rule — no `Stop`
-//! event and the last event within [`LIVE_WINDOW_MS`]. Real liveness (issue #19)
-//! will supersede this; the rule is documented, not papered over (ADR-0002).
+//! Liveness note: the `@live` selector delegates to [`crate::liveness`] (issue
+//! #19) — started, not stopped, and last event within
+//! [`DEFAULT_LIVE_WINDOW_MS`]. Honesty (ADR-0002): liveness is inferred, never
+//! proven.
 
 use crate::event::{AgentEvent, EventKind};
+use crate::liveness::{self, LivenessInputs, DEFAULT_LIVE_WINDOW_MS};
 use crate::store::{SessionStore, StoreError};
-
-/// Provisional liveness window: a session with no `Stop` whose last event is
-/// within this many milliseconds of "now" is treated as live (issue #19 will
-/// replace this with a real liveness signal).
-pub const LIVE_WINDOW_MS: i64 = 5 * 60 * 1000;
 
 /// Marker that a selector is a scope/relative selector rather than an id prefix.
 const SELECTOR_AT: char = '@';
@@ -51,7 +48,9 @@ pub struct SessionSummary {
     /// Distinct working directories observed on the session's events, in
     /// first-seen order.
     pub cwds: Vec<String>,
-    /// Whether a `Stop` event was observed (used by the provisional liveness rule).
+    /// Whether a `SessionStart` event was observed (used by the liveness rule).
+    pub has_start: bool,
+    /// Whether a `Stop` event was observed (used by the liveness rule).
     pub has_stop: bool,
     /// Total parsed events.
     pub event_count: usize,
@@ -71,10 +70,23 @@ impl SessionSummary {
         self.last_event_ts.or(self.created_ts).unwrap_or(0)
     }
 
-    /// Provisional liveness (issue #19 will replace this): no `Stop` event and
-    /// the last activity within [`LIVE_WINDOW_MS`] of `now_ms`.
+    /// The facts the [`crate::liveness`] rule needs from this summary.
+    pub fn liveness_inputs(&self) -> LivenessInputs {
+        LivenessInputs {
+            has_start: self.has_start,
+            has_stop: self.has_stop,
+            last_event_ts: self.last_event_ts,
+        }
+    }
+
+    /// Liveness under the default window ([`DEFAULT_LIVE_WINDOW_MS`]).
     pub fn is_live(&self, now_ms: i64) -> bool {
-        !self.has_stop && now_ms.saturating_sub(self.recency_ms()) <= LIVE_WINDOW_MS
+        self.is_live_within(now_ms, DEFAULT_LIVE_WINDOW_MS)
+    }
+
+    /// Liveness under a caller-supplied recency window (`ls --live`, `top`).
+    pub fn is_live_within(&self, now_ms: i64, window_ms: i64) -> bool {
+        liveness::is_live(self.liveness_inputs(), now_ms, window_ms)
     }
 }
 
@@ -127,6 +139,7 @@ pub enum SelectorError {
 /// I/O, no wall-clock — every field derives from the inputs.
 pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> SessionSummary {
     let mut cwds: Vec<String> = Vec::new();
+    let mut has_start = false;
     let mut has_stop = false;
     let mut tool_calls = 0;
     for ev in events {
@@ -136,6 +149,7 @@ pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> Se
             }
         }
         match ev.kind {
+            EventKind::SessionStart => has_start = true,
             EventKind::Stop => has_stop = true,
             EventKind::ToolCall => tool_calls += 1,
             _ => {}
@@ -147,6 +161,7 @@ pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> Se
         first_event_ts: events.first().map(|e| e.ts),
         last_event_ts: events.last().map(|e| e.ts),
         cwds,
+        has_start,
         has_stop,
         event_count: events.len(),
         tool_calls,
@@ -175,7 +190,7 @@ pub fn collect_summaries(store: &SessionStore) -> Result<Vec<SessionSummary>, St
 /// - `@N` (N ≥ 1): the N-th most recent session (`@1` == `@last`).
 /// - `@project:<substring>`: the most recent session any of whose cwds contains
 ///   `<substring>`.
-/// - `@live:<n>`: the n-th most recent live session (provisional liveness).
+/// - `@live:<n>`: the n-th most recent live session ([`crate::liveness`]).
 /// - otherwise: a unique session-id prefix (ambiguity lists the candidates).
 pub fn resolve(
     summaries: &[SessionSummary],
@@ -264,7 +279,7 @@ fn resolve_project(
         })
 }
 
-/// `@live:<n>`: the n-th most recent live session (provisional liveness).
+/// `@live:<n>`: the n-th most recent live session ([`crate::liveness`]).
 fn resolve_live(
     summaries: &[SessionSummary],
     selector: &str,
@@ -396,12 +411,15 @@ mod tests {
         )
     }
 
-    /// A summary with a single cwd, `last_event_ts` = recency, no Stop.
+    /// A started (but unstopped) summary with a single cwd and `last_event_ts`
+    /// = recency. Includes a `SessionStart` so the liveness rule sees a live
+    /// candidate (issue #19: liveness requires an observed start).
     fn summary(id: &str, recency: i64, cwd: &str) -> SessionSummary {
         summarize(
             id,
             Some(recency),
             &[
+                event(recency - 2, EventKind::SessionStart, Some(cwd)),
                 event(recency - 1, EventKind::ToolCall, Some(cwd)),
                 event(recency, EventKind::ToolResult, Some(cwd)),
             ],
@@ -418,6 +436,7 @@ mod tests {
         ];
         let s = summarize("sess", Some(0), &events);
         assert_eq!(s.cwds, vec!["/a/proj"]);
+        assert!(s.has_start);
         assert!(s.has_stop);
         assert_eq!(s.tool_calls, 1);
         assert_eq!(s.event_count, 4);
@@ -565,15 +584,18 @@ mod tests {
     }
 
     #[test]
-    fn live_selector_uses_provisional_rule() {
+    fn live_selector_uses_liveness_rule() {
         // "stopped" has a Stop → not live; "stale" is beyond the window → not
-        // live; "live-*" are within the window with no Stop.
+        // live; "live-*" are within the window, started, with no Stop.
         let stopped = summarize(
             "stopped",
             Some(NOW),
-            &[event(NOW, EventKind::Stop, Some("/p"))],
+            &[
+                event(NOW - 1, EventKind::SessionStart, Some("/p")),
+                event(NOW, EventKind::Stop, Some("/p")),
+            ],
         );
-        let stale = summary("stale", NOW - LIVE_WINDOW_MS - 1, "/p");
+        let stale = summary("stale", NOW - DEFAULT_LIVE_WINDOW_MS - 1, "/p");
         let live_older = summary("live-older", NOW - 1_000, "/p");
         let live_newer = summary("live-newer", NOW - 10, "/p");
         let sessions = vec![stopped, stale, live_older, live_newer];
