@@ -2,6 +2,10 @@
 name = "agent-witness"
 version = "0.1.0"
 description = "A session recorder and audit log for AI coding agents"
+homepage = "https://github.com/rioX432/agent-witness"
+readme = "../../README.md"
+keywords = ["claude", "agent", "audit", "observability", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -18,3 +22,11 @@ ratatui = { workspace = true }
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true }
+
+# cargo-binstall metadata. Matches the archive naming/layout produced by 'dist'
+# (verified via `dist build`): archive `agent-witness-<target>.tar.xz` contains
+# a top-level `agent-witness-<target>/` dir holding the binary.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.xz"
+pkg-fmt = "txz"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
