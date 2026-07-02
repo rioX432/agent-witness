@@ -25,3 +25,8 @@ tokio = { version = "1", features = [
     "sync",
     "time",
 ] }
+
+# The profile that 'dist' will build with (release binaries for distribution).
+[profile.dist]
+inherits = "release"
+lto = "thin"
