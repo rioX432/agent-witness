@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-07-02
+
+Two root causes found by dogfooding on real sessions — both made the live-session
+features (`top`, `ls --live`, `@live:`) silently useless outside fixtures.
+
 ### Fixed
+- Liveness misread every interactive session as idle after its first turn: Claude Code's `Stop` hook fires per-turn, not per-session, but the rule treated any observed `Stop` as terminal. Liveness now keys on whether the *last* event is a `Stop`; a new real-captured multi-turn fixture pins the behavior as a canary (#23)
 - `init` now registers all five supported hook events — `SessionStart` and `UserPromptSubmit` were missing, so real sessions recorded no prompts and liveness (`ls`/`top`/`@live:`) never fired. A hook-set parity test pins init's event set to `capture.sh` so fixtures and real usage can't drift again. **Re-run `agent-witness init` after upgrading** to register the new events (idempotent; adds only the missing entries) (#26)
 - Liveness no longer requires an observed `SessionStart`: any recent, unstopped event now reads as live, so sessions recorded by pre-fix configs are detected correctly (#26)
 
@@ -37,6 +43,7 @@ v0.1 feature set.
 - Workspace scaffold, `just verify` gate, CI mirroring the local gate, ADRs (5e26c33, 4e056ad)
 - Distribution via dist (cargo-dist): release CI on version tags, Homebrew tap, cargo-binstall metadata, shell installer (df46a90)
 
-[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/rioX432/agent-witness/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/rioX432/agent-witness/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/rioX432/agent-witness/releases/tag/v0.0.1

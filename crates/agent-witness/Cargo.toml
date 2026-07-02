@@ -1,6 +1,6 @@
 [package]
 name = "agent-witness"
-version = "0.0.2"
+version = "0.0.3"
 description = "A session recorder and audit log for AI coding agents"
 homepage = "https://github.com/rioX432/agent-witness"
 readme = "../../README.md"
