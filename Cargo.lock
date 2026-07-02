@@ -9,6 +9,7 @@ dependencies = [
  "agent-witness-core",
  "anyhow",
  "clap",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

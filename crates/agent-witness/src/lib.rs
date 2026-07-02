@@ -5,5 +5,6 @@
 //! store live in `agent-witness-core`.
 
 pub mod emit;
+pub mod init;
 pub mod paths;
 pub mod watch;
