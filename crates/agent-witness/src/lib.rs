@@ -7,4 +7,5 @@
 pub mod emit;
 pub mod init;
 pub mod paths;
+pub mod transcript;
 pub mod watch;

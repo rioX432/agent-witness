@@ -44,11 +44,19 @@ pub enum EmitOutcome {
 /// does not confirm persistence. Every failure mode after `connect` (send
 /// error, missing/timed-out ack) also falls back, so a hook record is never
 /// lost as long as the local store is writable.
-pub async fn run_emit(socket: &Path, sessions_root: &Path, payload: String) -> Result<EmitOutcome> {
+///
+/// `transcript_enabled` gates the best-effort transcript adapter on the fallback
+/// path only; when the daemon acks, the `watch` server owns transcript ingest.
+pub async fn run_emit(
+    socket: &Path,
+    sessions_root: &Path,
+    payload: String,
+    transcript_enabled: bool,
+) -> Result<EmitOutcome> {
     match forward(socket, &payload).await {
         Ok(()) => Ok(EmitOutcome::Forwarded),
         Err(_) => {
-            fallback(sessions_root, &payload)?;
+            fallback(sessions_root, &payload, transcript_enabled)?;
             Ok(EmitOutcome::Fallback)
         }
     }
@@ -77,9 +85,12 @@ async fn forward(socket: &Path, payload: &str) -> std::io::Result<()> {
 }
 
 /// Write the payload directly to the store (no daemon). Uses the wall clock at
-/// the edge; the normalizer it drives stays clock-free.
-fn fallback(sessions_root: &Path, payload: &str) -> Result<()> {
+/// the edge; the normalizer it drives stays clock-free. After the canonical hook
+/// record lands, best-effort transcript ingest runs (on `Stop`); its failures
+/// are isolated and never fail this hook.
+fn fallback(sessions_root: &Path, payload: &str, transcript_enabled: bool) -> Result<()> {
     let mut receiver = Receiver::new(SessionStore::new(sessions_root));
     receiver.ingest(payload, &SystemClock)?;
+    crate::transcript::ingest_on_stop(&mut receiver, payload, &SystemClock, transcript_enabled);
     Ok(())
 }
