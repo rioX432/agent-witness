@@ -1,6 +1,6 @@
 [package]
 name = "agent-witness-core"
-version = "0.1.0"
+version = "0.0.1"
 description = "Event model, session store, and adapters for agent-witness"
 edition.workspace = true
 license.workspace = true
