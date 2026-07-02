@@ -9,7 +9,8 @@ This document describes how the pieces fit together. Design rationale lives in
 
 ```
 Claude Code session
-    │  PreToolUse / PostToolUse / Stop hooks (JSON on stdin)
+    │  SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop
+    │  hooks (JSON on stdin)
     ▼
 agent-witness emit          ── bridge invoked by each hook
     │  unix socket ($XDG_RUNTIME_DIR or ~/.agent-witness/witness.sock)

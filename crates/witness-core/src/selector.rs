@@ -49,7 +49,10 @@ pub struct SessionSummary {
     /// Distinct working directories observed on the session's events, in
     /// first-seen order.
     pub cwds: Vec<String>,
-    /// Whether a `SessionStart` event was observed (used by the liveness rule).
+    /// Whether a `SessionStart` event was observed. Informational only: the
+    /// liveness rule no longer gates on it (issue #26 — sessions recorded by
+    /// pre-#26 configs never emit one), but it still records honestly whether we
+    /// saw the session's own start.
     pub has_start: bool,
     /// Whether the **last** observed event is a `Stop`, i.e. the session is
     /// currently between turns (used by the liveness rule). `Stop` is per-turn,
@@ -77,7 +80,6 @@ impl SessionSummary {
     /// The facts the [`crate::liveness`] rule needs from this summary.
     pub fn liveness_inputs(&self) -> LivenessInputs {
         LivenessInputs {
-            has_start: self.has_start,
             last_is_stop: self.last_is_stop,
             last_event_ts: self.last_event_ts,
         }
@@ -417,8 +419,7 @@ mod tests {
     }
 
     /// A started (but unstopped) summary with a single cwd and `last_event_ts`
-    /// = recency. Includes a `SessionStart` so the liveness rule sees a live
-    /// candidate (issue #19: liveness requires an observed start).
+    /// = recency; its recent, non-`Stop` last event makes it a live candidate.
     fn summary(id: &str, recency: i64, cwd: &str) -> SessionSummary {
         summarize(
             id,
@@ -639,6 +640,27 @@ mod tests {
             Err(SelectorError::NoMatch {
                 selector: "@live:1".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn live_selector_includes_session_without_session_start() {
+        // Issue #26: a session recorded by a pre-#26 config has no SessionStart,
+        // yet its recent, unstopped last event must still read as live.
+        let no_start = summarize(
+            "no-start",
+            Some(NOW),
+            &[
+                event(NOW - 1, EventKind::ToolCall, Some("/p")),
+                event(NOW, EventKind::ToolResult, Some("/p")),
+            ],
+        );
+        assert!(!no_start.has_start);
+        assert_eq!(
+            resolve(&[no_start], Some("@live:1"), "/p", NOW)
+                .unwrap()
+                .session_id,
+            "no-start"
         );
     }
 

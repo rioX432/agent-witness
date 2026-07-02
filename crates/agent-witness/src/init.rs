@@ -57,10 +57,21 @@ const SETTINGS_FILE: &str = "settings.json";
 const BACKUP_PREFIX: &str = ".bak-";
 
 /// Hook events we register, paired with whether the event takes a tool matcher.
-/// PreToolUse / PostToolUse are per-tool (matcher `*`); Stop fires once per turn
-/// and takes no matcher (confirmed against the Claude Code hooks reference).
-const MANAGED_HOOKS: &[(&str, bool)] =
-    &[("PreToolUse", true), ("PostToolUse", true), ("Stop", false)];
+///
+/// PreToolUse / PostToolUse are per-tool (matcher `*`). SessionStart,
+/// UserPromptSubmit and Stop are not tool-scoped and take no matcher (confirmed
+/// against the Claude Code hooks reference and mirrored by
+/// `tools/fixtures/capture.sh`). This set MUST stay identical to the events
+/// capture.sh registers, or fixtures and real sessions drift and the pipeline
+/// silently loses events (issue #26); `init_and_capture_register_same_events`
+/// pins that parity.
+const MANAGED_HOOKS: &[(&str, bool)] = &[
+    ("SessionStart", false),
+    ("UserPromptSubmit", false),
+    ("PreToolUse", true),
+    ("PostToolUse", true),
+    ("Stop", false),
+];
 
 /// What `init` did — surfaced for the CLI report and asserted in tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,14 +373,113 @@ mod tests {
         assert!(report.backup.is_none(), "fresh file has nothing to back up");
 
         let root = read_json(&path);
-        // PreToolUse / PostToolUse carry matcher "*"; Stop carries none.
+        // PreToolUse / PostToolUse carry matcher "*"; the non-tool events don't.
         assert_eq!(root["hooks"]["PreToolUse"][0]["matcher"], json!(MATCH_ALL));
         assert_eq!(root["hooks"]["PostToolUse"][0]["matcher"], json!(MATCH_ALL));
-        assert!(root["hooks"]["Stop"][0].get("matcher").is_none());
+        for event in ["SessionStart", "UserPromptSubmit", "Stop"] {
+            assert!(
+                root["hooks"][event][0].get("matcher").is_none(),
+                "{event} must carry no matcher"
+            );
+        }
         for (event, _) in MANAGED_HOOKS {
             let command = &root["hooks"][*event][0]["hooks"][0]["command"];
             assert_eq!(command, &json!(EMIT_COMMAND), "for {event}");
         }
+    }
+
+    #[test]
+    fn install_upgrades_partial_legacy_set_without_duplicating() {
+        // Migration path: an install from before issue #26 registered only the
+        // three tool/turn hooks. Re-running init must ADD the two missing events
+        // (SessionStart / UserPromptSubmit) and leave the existing three intact,
+        // with no duplicate entries.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "hooks": {
+                "PreToolUse":  [ { "matcher": "*", "hooks": [ { "type": "command", "command": "agent-witness emit" } ] } ],
+                "PostToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "agent-witness emit" } ] } ],
+                "Stop":        [ { "hooks": [ { "type": "command", "command": "agent-witness emit" } ] } ]
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let report = run_init(&path, false, &clock()).unwrap();
+        assert_eq!(report.outcome, InitOutcome::Installed);
+
+        let root = read_json(&path);
+        // All five events registered exactly once.
+        for (event, _) in MANAGED_HOOKS {
+            assert_eq!(own_group_count(&root, event), 1, "for {event}");
+        }
+        // The two previously missing events are now present with no matcher.
+        for event in ["SessionStart", "UserPromptSubmit"] {
+            assert!(root["hooks"][event][0].get("matcher").is_none());
+        }
+
+        // And a further re-run is a clean no-op (full set is idempotent).
+        let again = run_init(&path, false, &clock()).unwrap();
+        assert_eq!(again.outcome, InitOutcome::AlreadyInstalled);
+    }
+
+    #[test]
+    fn init_and_capture_register_same_events() {
+        // Regression guard for issue #26: fixtures come from capture.sh, so if
+        // its hook set and init's diverge, fixtures exercise events real users
+        // never record (or vice versa) and tests miss the gap. Assert the two
+        // register the identical (event, uses-matcher) set.
+        let script = std::fs::read_to_string(capture_sh_path()).expect("read capture.sh");
+        let mut from_capture = capture_sh_event_shapes(&script);
+        let mut from_init: Vec<(String, bool)> = MANAGED_HOOKS
+            .iter()
+            .map(|(name, m)| ((*name).to_string(), *m))
+            .collect();
+        from_capture.sort();
+        from_init.sort();
+        assert_eq!(
+            from_init, from_capture,
+            "init and capture.sh must register the same hook events with the same matcher shape"
+        );
+    }
+
+    /// Absolute path to `tools/fixtures/capture.sh` from this crate's manifest.
+    fn capture_sh_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tools")
+            .join("fixtures")
+            .join("capture.sh")
+    }
+
+    /// Mechanically extract capture.sh's registered `(event, uses_matcher)` set
+    /// from its jq hook spec. Each event line reads `EventName: with_matcher` or
+    /// `EventName: no_matcher`; the `def with_matcher:` / `def no_matcher:`
+    /// definition lines are skipped because their name contains a space.
+    fn capture_sh_event_shapes(script: &str) -> Vec<(String, bool)> {
+        let mut out = Vec::new();
+        for line in script.lines() {
+            let Some((name_part, rest)) = line.trim().split_once(':') else {
+                continue;
+            };
+            let name = name_part.trim();
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let use_matcher = if rest.contains("with_matcher") {
+                true
+            } else if rest.contains("no_matcher") {
+                false
+            } else {
+                continue;
+            };
+            out.push((name.to_string(), use_matcher));
+        }
+        out
     }
 
     #[test]
