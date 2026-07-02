@@ -28,12 +28,41 @@ agent-witness show @project:avvy  # latest session whose cwd matches "avvy"
 agent-witness show @live:1        # the most recent still-running session
 agent-witness show 9f8c           # unique session-id prefix
 agent-witness show --pick         # choose from an interactive list, then drill in
-agent-witness ls                  # list every recorded session
+agent-witness show --follow       # live-tail the timeline as new events land
+agent-witness ls                  # list every recorded session (STATE = live/idle)
+agent-witness ls --live           # only the sessions running right now
+agent-witness top                 # htop-like live view of every running session
 ```
 
 - Observation only — this is not a sandbox and not a security boundary (see SECURITY.md)
 - Every event is labeled `direct | observed | inferred` — we record what we saw, not what we guess
 - Planned interop: export to Cursor's agent-trace format
+
+## Live sessions: the live end of the audit trail
+
+`top` and `show --follow` are the *now* end of the same audit record `show`/`report`
+replay after the fact — not a separate telemetry product.
+
+```bash
+agent-witness top             # resident view of live sessions; Enter drills into one, q quits
+agent-witness show --follow   # tail one session's timeline (unifies with the in-TUI `f` toggle)
+```
+
+A session is **live** when it has started, has not stopped, and its last event is
+within a recency window (default 5 min, `--window <seconds>`). Liveness is
+*inferred* from a store scan — no daemon required — so a crashed agent reads as
+live until its window lapses, then flips to idle. We label that honestly rather
+than claim certainty (ADR-0002).
+
+**Positioning vs. abtop and usage dashboards:** `top`
+answers "what are my agents *doing* right now?" — project, the tool currently
+running, last activity, elapsed, event count. It is **not** a usage/cost meter.
+Token and spend aggregation is a deliberate Won't Do (see NON-GOALS.md): it would
+pull the tool toward a metrics dashboard and away from honest observation.
+
+**Watching several sessions at once?** agent-witness has no in-app split pane (a
+deliberate cut). Use an external multiplexer — tile `show --follow` panes in Cmux
+or tmux. Recipe: [`docs/recipes/cmux.md`](docs/recipes/cmux.md).
 
 ## Install
 

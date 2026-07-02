@@ -41,7 +41,7 @@ The primary merge gate is **`just verify` locally**; GitHub Actions CI mirrors t
 ```
 crates/
   witness-core/     # lib: AgentEvent model, JSONL session store, adapters (hooks receiver, transcript)
-  agent-witness/    # bin: CLI (init/watch/ls/show/report/emit) + ratatui TUI
+  agent-witness/    # bin: CLI (init/watch/ls/show/report/emit/top) + ratatui TUI
 tests/fixtures/     # sanitized hook-event JSONL from real sessions (golden test inputs)
 ```
 

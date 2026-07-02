@@ -5,17 +5,18 @@
 //! honesty surface here — corrupted/unparseable lines are counted and shown,
 //! never hidden (ADR-0002).
 
-use agent_witness_core::SessionStore;
+use agent_witness_core::{summarize, SessionStore};
 use anyhow::Result;
 
 use crate::timefmt::{format_duration_ms, format_utc};
-use crate::timeline::tool_call_count;
 
 /// A single session's summary row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LsRow {
     /// Session id (directory name).
     pub session_id: String,
+    /// Whether the session is (inferred) still running — see `agent_witness_core::liveness`.
+    pub live: bool,
     /// Start time (session `created_ts`, or the first event's time as a fallback).
     pub started_ms: Option<i64>,
     /// Total parsed events.
@@ -29,38 +30,64 @@ pub struct LsRow {
 }
 
 /// Column headers, in display order.
-const HEADERS: [&str; 6] = [
-    "SESSION", "STARTED", "EVENTS", "TOOLS", "DURATION", "CORRUPT",
+const HEADERS: [&str; 7] = [
+    "SESSION", "STATE", "STARTED", "EVENTS", "TOOLS", "DURATION", "CORRUPT",
 ];
+/// Number of table columns.
+const COLS: usize = 7;
 /// Gap between columns.
 const COL_GAP: &str = "  ";
 /// Placeholder for an absent value.
 const ABSENT: &str = "-";
+/// State cell for a live session.
+const STATE_LIVE: &str = "live";
+/// State cell for an idle (started-and-idle, stopped, or stale) session.
+const STATE_IDLE: &str = "idle";
 
 /// Gather a summary row for every recorded session, sorted by id.
-pub fn collect_rows(store: &SessionStore) -> Result<Vec<LsRow>> {
+///
+/// `now_ms` and `window_ms` are injected so the `live` verdict stays a pure
+/// function of recorded data and the recency window (determinism; issue #19).
+pub fn collect_rows(store: &SessionStore, now_ms: i64, window_ms: i64) -> Result<Vec<LsRow>> {
     let mut rows = Vec::new();
     for id in store.list_sessions()? {
         let read = store.read(&id)?;
-        let first_ts = read.events.first().map(|e| e.ts);
-        let last_ts = read.events.last().map(|e| e.ts);
-        // Prefer the recorded session start; fall back to the first event's time
-        // for sessions whose meta is missing.
-        let started_ms = store.read_meta(&id).ok().map(|m| m.created_ts).or(first_ts);
-        let duration_ms = match (first_ts, last_ts) {
+        let created_ts = store.read_meta(&id).ok().map(|m| m.created_ts);
+        // One canonical judgement path: the same summary top/pick/selector use,
+        // so `ls` can never disagree with them on what "live" means.
+        let summary = summarize(&id, created_ts, &read.events);
+        let duration_ms = match (summary.first_event_ts, summary.last_event_ts) {
             (Some(first), Some(last)) => Some(last - first),
             _ => None,
         };
         rows.push(LsRow {
             session_id: id,
-            started_ms,
-            events: read.events.len(),
-            tools: tool_call_count(&read.events),
+            live: summary.is_live_within(now_ms, window_ms),
+            started_ms: summary.started_ms(),
+            events: summary.event_count,
+            tools: summary.tool_calls,
             duration_ms,
             corrupt: read.skipped_lines,
         });
     }
     Ok(rows)
+}
+
+/// Keep only the live sessions (`ls --live`).
+pub fn only_live(rows: Vec<LsRow>) -> Vec<LsRow> {
+    rows.into_iter().filter(|r| r.live).collect()
+}
+
+/// Render the `ls --live` view. Unlike [`render_table`], the empty state is
+/// honest about *why* nothing printed: with recorded-but-idle sessions the
+/// "run `agent-witness init`" hint would be false (ADR-0002).
+pub fn render_live_table(live_rows: &[LsRow], total_sessions: usize) -> String {
+    if live_rows.is_empty() && total_sessions > 0 {
+        return format!(
+            "No live sessions right now ({total_sessions} recorded). `agent-witness ls` lists them all.\n"
+        );
+    }
+    render_table(live_rows)
 }
 
 /// Render rows as an aligned, deterministic text table.
@@ -71,11 +98,12 @@ pub fn render_table(rows: &[LsRow]) -> String {
     }
 
     // Materialize each cell as a string, then size columns to the widest cell.
-    let cells: Vec<[String; 6]> = rows
+    let cells: Vec<[String; COLS]> = rows
         .iter()
         .map(|r| {
             [
                 r.session_id.clone(),
+                if r.live { STATE_LIVE } else { STATE_IDLE }.to_string(),
                 r.started_ms
                     .map(format_utc)
                     .unwrap_or_else(|| ABSENT.into()),
@@ -105,7 +133,7 @@ pub fn render_table(rows: &[LsRow]) -> String {
 }
 
 /// Append one padded, gap-separated row (trailing whitespace trimmed).
-fn push_row(out: &mut String, cells: &[String; 6], widths: &[usize; 6]) {
+fn push_row(out: &mut String, cells: &[String; COLS], widths: &[usize; COLS]) {
     let line: Vec<String> = cells
         .iter()
         .zip(widths.iter())
@@ -118,6 +146,38 @@ fn push_row(out: &mut String, cells: &[String; 6], widths: &[usize; 6]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_witness_core::{
+        AgentEvent, Attribution, EventKind, Source, CONFIDENCE_CERTAIN, DEFAULT_LIVE_WINDOW_MS,
+    };
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    const NOW: i64 = 1_700_000_100_000;
+    const CREATED: i64 = 1_700_000_000_000;
+
+    fn row(id: &str, live: bool) -> LsRow {
+        LsRow {
+            session_id: id.into(),
+            live,
+            started_ms: Some(CREATED),
+            events: 3,
+            tools: 1,
+            duration_ms: Some(142),
+            corrupt: 0,
+        }
+    }
+
+    fn event(ts: i64, kind: EventKind) -> AgentEvent {
+        AgentEvent::new(
+            ts,
+            "s",
+            Source::Hooks,
+            kind,
+            Attribution::Direct,
+            CONFIDENCE_CERTAIN,
+            json!({ "tool_name": "Read" }),
+        )
+    }
 
     #[test]
     fn empty_rows_render_a_friendly_hint() {
@@ -126,34 +186,86 @@ mod tests {
     }
 
     #[test]
-    fn table_has_header_and_one_line_per_row() {
-        let rows = vec![
-            LsRow {
-                session_id: "sess-a".into(),
-                started_ms: Some(1_700_000_000_000),
-                events: 7,
-                tools: 2,
-                duration_ms: Some(142),
-                corrupt: 0,
-            },
-            LsRow {
-                session_id: "sess-b".into(),
-                started_ms: None,
-                events: 0,
-                tools: 0,
-                duration_ms: None,
-                corrupt: 1,
-            },
-        ];
+    fn table_has_state_column_with_live_and_idle() {
+        let rows = vec![row("sess-a", true), row("sess-b", false)];
         let table = render_table(&rows);
         let lines: Vec<&str> = table.lines().collect();
         assert_eq!(lines.len(), 3); // header + 2 rows
         assert!(lines[0].starts_with("SESSION"));
+        assert!(lines[0].contains("STATE"));
         assert!(lines[0].contains("CORRUPT"));
         assert!(lines[1].contains("sess-a"));
+        assert!(lines[1].contains("live"));
         assert!(lines[1].contains("2023-11-14 22:13:20Z"));
-        // Absent values render as the placeholder, corrupt count is visible.
         assert!(lines[2].contains("sess-b"));
-        assert!(lines[2].trim_end().ends_with('1'));
+        assert!(lines[2].contains("idle"));
+        // Corrupt count is still the last column.
+        assert!(lines[2].trim_end().ends_with('0'));
+    }
+
+    #[test]
+    fn live_view_empty_state_is_honest_about_recorded_sessions() {
+        // 3 recorded, none live: must NOT claim nothing was ever recorded.
+        let out = render_live_table(&[], 3);
+        assert!(out.contains("No live sessions right now (3 recorded)"));
+        assert!(!out.contains("agent-witness init"));
+        // Truly nothing recorded: the init hint is correct.
+        let out = render_live_table(&[], 0);
+        assert!(out.contains("No sessions recorded yet"));
+    }
+
+    #[test]
+    fn live_view_renders_rows_like_the_plain_table() {
+        let rows = vec![row("live-1", true)];
+        assert_eq!(render_live_table(&rows, 5), render_table(&rows));
+    }
+
+    #[test]
+    fn only_live_keeps_running_sessions() {
+        let rows = vec![
+            row("live-1", true),
+            row("idle-1", false),
+            row("live-2", true),
+        ];
+        let live = only_live(rows);
+        assert_eq!(live.len(), 2);
+        assert!(live.iter().all(|r| r.live));
+    }
+
+    #[test]
+    fn collect_rows_marks_live_and_stopped_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+
+        // Live: started, recent, no stop.
+        let mut w = store.open("live-sess", CREATED).unwrap();
+        w.append(&event(NOW - 1_000, EventKind::SessionStart))
+            .unwrap();
+        w.append(&event(NOW - 500, EventKind::ToolCall)).unwrap();
+        drop(w);
+
+        // Stopped: started, recent, but has a Stop.
+        let mut w = store.open("stopped-sess", CREATED).unwrap();
+        w.append(&event(NOW - 1_000, EventKind::SessionStart))
+            .unwrap();
+        w.append(&event(NOW - 500, EventKind::Stop)).unwrap();
+        drop(w);
+
+        // Stale: started, no stop, but last activity is beyond the window.
+        let mut w = store.open("stale-sess", CREATED).unwrap();
+        w.append(&event(
+            NOW - DEFAULT_LIVE_WINDOW_MS - 10,
+            EventKind::SessionStart,
+        ))
+        .unwrap();
+        drop(w);
+
+        let rows = collect_rows(&store, NOW, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        let live_of = |id: &str| rows.iter().find(|r| r.session_id == id).unwrap().live;
+        assert!(live_of("live-sess"));
+        assert!(!live_of("stopped-sess"));
+        assert!(!live_of("stale-sess"));
+
+        assert_eq!(only_live(rows).len(), 1);
     }
 }

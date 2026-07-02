@@ -8,11 +8,20 @@ use std::sync::Arc;
 
 use agent_witness::init::{self, InitOutcome, InitReport};
 use agent_witness::report::{self, JsonExporter, MarkdownExporter, SessionExporter};
-use agent_witness::{emit, ls, paths, pick, tui, watch};
-use agent_witness_core::{collect_summaries, resolve, Clock, SessionStore, SystemClock};
+use agent_witness::{emit, ls, paths, pick, top, tui, watch};
+use agent_witness_core::{
+    collect_summaries, resolve, Clock, SessionStore, SystemClock, DEFAULT_LIVE_WINDOW_MS,
+};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use tokio::io::AsyncReadExt;
+
+/// Milliseconds per second, for converting the `--window` flag (seconds) to the
+/// milliseconds the liveness rule works in.
+const MS_PER_SEC: i64 = 1_000;
+/// Default liveness recency window in seconds, mirrored from the core default so
+/// the CLI help shows a concrete number.
+const DEFAULT_WINDOW_SECS: u64 = (DEFAULT_LIVE_WINDOW_MS / MS_PER_SEC) as u64;
 
 /// Session recorder and audit log for AI coding agents.
 #[derive(Debug, Parser)]
@@ -33,12 +42,37 @@ enum Command {
     Emit(TranscriptArgs),
     /// Run the unix socket server: receive hook payloads, normalize, and store.
     Watch(TranscriptArgs),
-    /// List recorded sessions (start time, event/tool counts, duration).
-    Ls,
+    /// List recorded sessions (state, start time, event/tool counts, duration).
+    Ls(LsArgs),
     /// Open the interactive timeline viewer for a recorded session.
     Show(ShowArgs),
     /// Print a shareable markdown (or --json) audit report for a session.
     Report(ReportArgs),
+    /// Resident htop-like view of the sessions running right now; Enter drills
+    /// into one's timeline, q quits.
+    Top(TopArgs),
+}
+
+/// Arguments for `agent-witness ls`.
+#[derive(Debug, Args)]
+struct LsArgs {
+    /// Show only sessions that are currently live (started, not stopped, active
+    /// within the recency window).
+    #[arg(long)]
+    live: bool,
+    /// Liveness recency window in seconds (a session idle longer than this is
+    /// not "live").
+    #[arg(long, default_value_t = DEFAULT_WINDOW_SECS)]
+    window: u64,
+}
+
+/// Arguments for `agent-witness top`.
+#[derive(Debug, Args)]
+struct TopArgs {
+    /// Liveness recency window in seconds (a session idle longer than this drops
+    /// off the live view).
+    #[arg(long, default_value_t = DEFAULT_WINDOW_SECS)]
+    window: u64,
 }
 
 /// Arguments for `agent-witness report`.
@@ -62,6 +96,10 @@ struct ShowArgs {
     /// pick (merges the `ls` → `show` two-step into one command).
     #[arg(long)]
     pick: bool,
+    /// Start in live-tail mode: follow the session as new events are appended
+    /// (same as pressing `f` in the viewer).
+    #[arg(long)]
+    follow: bool,
 }
 
 /// Arguments for `agent-witness init`.
@@ -120,11 +158,17 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Command::Ls => {
+        Command::Ls(args) => {
             let paths = paths::resolve()?;
             let store = SessionStore::new(&paths.sessions_root);
-            let rows = ls::collect_rows(&store)?;
-            print!("{}", ls::render_table(&rows));
+            let rows = ls::collect_rows(&store, SystemClock.now_ms(), window_ms(args.window))?;
+            if args.live {
+                let total = rows.len();
+                let live = ls::only_live(rows);
+                print!("{}", ls::render_live_table(&live, total));
+            } else {
+                print!("{}", ls::render_table(&rows));
+            }
         }
         Command::Show(args) => {
             let paths = paths::resolve()?;
@@ -143,7 +187,8 @@ async fn main() -> Result<()> {
             let Some(session) = session else {
                 return Ok(()); // Picker was dismissed without a choice.
             };
-            tokio::task::spawn_blocking(move || tui::run_show(&store, &session)).await??;
+            let follow = args.follow;
+            tokio::task::spawn_blocking(move || tui::run_show(&store, &session, follow)).await??;
         }
         Command::Report(args) => {
             let paths = paths::resolve()?;
@@ -165,9 +210,26 @@ async fn main() -> Result<()> {
             };
             print!("{rendered}");
         }
+        Command::Top(args) => {
+            let paths = paths::resolve()?;
+            let store = SessionStore::new(&paths.sessions_root);
+            let window_ms = window_ms(args.window);
+            // The resident view drives a blocking crossterm loop; keep it off the
+            // async reactor so polling never starves the runtime.
+            tokio::task::spawn_blocking(move || top::run_top(&store, &SystemClock, window_ms))
+                .await??;
+        }
     }
 
     Ok(())
+}
+
+/// Convert a `--window` value in seconds to the milliseconds the liveness rule
+/// uses, saturating rather than overflowing on absurd inputs.
+fn window_ms(secs: u64) -> i64 {
+    i64::try_from(secs)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(MS_PER_SEC)
 }
 
 /// Resolve a session `selector` (or `None` for the no-argument default) to a

@@ -1,0 +1,24 @@
+┌agent-witness─────────────────────────────────────────────────────────────────┐
+│session agent-witness  ·  started 2023-11-14 22:13:20Z                        │
+│7 events · 2 tool calls · 0 corrupt lines · follow off                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌timeline──────────────────────────────────────────────────────────────────────┐
+│>    +0.000s D SESSION                startup                                 │
+│     +1.000s D PROMPT                 Create a file hello.rs containing a main│
+│     +2.000s D Write        ok        /home/user/project/hello.rs             │
+│     +4.000s D Bash         ok        rustc --version                         │
+│     +6.000s D STOP                   完 了 し ま し た 。 `hello.rs` を 作 成 し (`main`│
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+j/k move · Enter detail · f follow · q quit · Esc back
