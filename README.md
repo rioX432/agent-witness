@@ -20,6 +20,11 @@ agent-witness show            # replay the latest session for this directory
 agent-witness report          # print a shareable markdown audit of it
 ```
 
+> **Upgrading?** Re-run `agent-witness init` after updating. Releases before
+> this one registered only three hook events; re-running init adds the newer
+> ones (`SessionStart`, `UserPromptSubmit`) so prompts and live-session
+> detection work. It is idempotent and keeps a timestamped backup.
+
 No session id required: with no argument, `show` and `report` open the latest
 session recorded from the current directory (falling back to the globally latest
 session, with a note, when this directory has none). When you do want a specific
@@ -73,7 +78,8 @@ or tmux. Recipe: [`docs/recipes/cmux.md`](docs/recipes/cmux.md).
 
 ## How it works
 
-Claude Code hooks (`PreToolUse` / `PostToolUse` / `Stop`) pipe each event into
+Claude Code hooks (`SessionStart` / `UserPromptSubmit` / `PreToolUse` /
+`PostToolUse` / `Stop`) pipe each event into
 `agent-witness emit`, which forwards it to a unix socket — or, when no daemon is
 running, writes straight to the JSONL store. **No daemon required**; `agent-witness
 watch` is optional. The raw hook payload is preserved verbatim next to every

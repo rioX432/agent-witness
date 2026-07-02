@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `init` now registers all five supported hook events — `SessionStart` and `UserPromptSubmit` were missing, so real sessions recorded no prompts and liveness (`ls`/`top`/`@live:`) never fired. A hook-set parity test pins init's event set to `capture.sh` so fixtures and real usage can't drift again. **Re-run `agent-witness init` after upgrading** to register the new events (idempotent; adds only the missing entries) (#26)
+- Liveness no longer requires an observed `SessionStart`: any recent, unstopped event now reads as live, so sessions recorded by pre-fix configs are detected correctly (#26)
+
 ## [0.0.2] - 2026-07-02
 
 ### Added
