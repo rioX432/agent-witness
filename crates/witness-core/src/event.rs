@@ -49,11 +49,28 @@ pub enum EventKind {
     SessionStart,
     /// A user/agent prompt turn.
     Prompt,
-    /// A tool invocation (Bash, Read, Edit, …). Tool name and arguments are in
-    /// the payload; there is no per-tool enum variant on purpose.
+    /// A tool invocation was requested/started (Claude Code `PreToolUse`). Tool
+    /// name and arguments are in the payload; there is no per-tool enum variant
+    /// on purpose.
     ToolCall,
+    /// A tool invocation completed and reported a response (`PostToolUse`).
+    /// Pairs with a preceding [`EventKind::ToolCall`] via `tool_use_id`.
+    ToolResult,
+    /// A tool invocation failed. Reserved from the start (see ADR-0001).
+    ///
+    /// Important empirical reality (pinned by a fixture test in issue #8): a
+    /// `Bash` tool call that exits non-zero fires **no** `PostToolUse` hook, so
+    /// today a failure surfaces only as a [`EventKind::ToolCall`] with no
+    /// matching [`EventKind::ToolResult`]. This variant is emitted only if
+    /// Claude Code ever sends an explicit `PostToolUseFailure` hook; the
+    /// unpaired-`ToolCall` signal is what the pipeline relies on now.
+    ToolFailure,
     /// The agent stopped / a turn ended.
     Stop,
+    /// The recorder itself could not process an input (e.g. malformed hook
+    /// JSON, a non-object payload, a missing required field, or an unmapped
+    /// hook event). Recorded rather than dropped so nothing is silently lost.
+    Error,
 }
 
 /// One normalized record. Serializes to a single JSONL line.

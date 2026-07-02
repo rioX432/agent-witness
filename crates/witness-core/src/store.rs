@@ -23,6 +23,10 @@ use crate::event::{AgentEvent, SCHEMA_VERSION};
 const EVENTS_FILE: &str = "events.jsonl";
 /// File name for the per-session metadata.
 const META_FILE: &str = "meta.json";
+/// File name for the per-session raw source log (canonical-source preservation,
+/// ADR-0001): every raw hook payload is kept verbatim alongside its normalized
+/// event, linked by `raw_event_ref`.
+const RAW_FILE: &str = "raw.jsonl";
 
 /// Errors from the session store.
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +68,26 @@ pub struct SessionMeta {
     pub created_ts: i64,
 }
 
+/// A raw source record: one hook payload preserved verbatim (ADR-0001).
+///
+/// The original bytes are stored as a string in [`RawRecord::raw`] rather than a
+/// re-serialized `Value`, so key order and formatting are preserved exactly and
+/// the canonical source is never silently rewritten. Each record is linked to
+/// its normalized [`AgentEvent`] by matching `raw_ref` == `AgentEvent.raw_event_ref`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawRecord {
+    /// Schema version this record was written under.
+    pub v: u32,
+    /// Receive time, Unix epoch milliseconds. Supplied by the caller.
+    pub ts: i64,
+    /// Session id this raw payload was attributed to.
+    pub session: String,
+    /// Stable id linking this raw record to its normalized event.
+    pub raw_ref: String,
+    /// The raw hook payload, verbatim as received on stdin / the socket.
+    pub raw: String,
+}
+
 /// Result of reading a session's event log.
 ///
 /// `skipped_lines` is reported rather than hidden: a corrupted line is
@@ -72,6 +96,16 @@ pub struct SessionMeta {
 pub struct SessionRead {
     /// Successfully parsed events, in file order.
     pub events: Vec<AgentEvent>,
+    /// Number of non-empty lines that failed to parse and were skipped.
+    pub skipped_lines: usize,
+}
+
+/// Result of reading a session's raw source log, with the same honest
+/// skipped-line accounting as [`SessionRead`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawRead {
+    /// Successfully parsed raw records, in file order.
+    pub records: Vec<RawRecord>,
     /// Number of non-empty lines that failed to parse and were skipped.
     pub skipped_lines: usize,
 }
@@ -127,7 +161,19 @@ impl SessionStore {
             .open(&events_path)
             .map_err(|e| StoreError::io(&events_path, e))?;
 
-        Ok(SessionWriter { events_path, file })
+        let raw_path = dir.join(RAW_FILE);
+        let raw_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&raw_path)
+            .map_err(|e| StoreError::io(&raw_path, e))?;
+
+        Ok(SessionWriter {
+            events_path,
+            file,
+            raw_path,
+            raw_file,
+        })
     }
 
     /// Read and parse a session's event log, skipping corrupted lines so one
@@ -146,6 +192,27 @@ impl SessionStore {
         let bytes = fs::read(&meta_path).map_err(|e| StoreError::io(&meta_path, e))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
+
+    /// Read and parse a session's raw source log. Corrupted lines are skipped
+    /// but counted ([`RawRead::skipped_lines`]) — the canonical source must
+    /// never under-report silently (ADR-0002). Returns an empty read if the
+    /// log does not exist yet.
+    pub fn read_raw(&self, session_id: &str) -> Result<RawRead, StoreError> {
+        validate_session_id(session_id)?;
+        let raw_path = self.session_dir(session_id).join(RAW_FILE);
+        let (records, skipped_lines) = read_jsonl(&raw_path)?;
+        Ok(RawRead {
+            records,
+            skipped_lines,
+        })
+    }
+}
+
+/// Whether `session_id` is a safe single path component (public form of the
+/// internal guard). Lets callers pre-validate untrusted ids from hook payloads
+/// and fall back gracefully instead of hitting a store error.
+pub fn is_valid_session_id(session_id: &str) -> bool {
+    validate_session_id(session_id).is_ok()
 }
 
 /// Ensure a session id is a single, ordinary path component (no separators, no
@@ -163,34 +230,36 @@ fn validate_session_id(session_id: &str) -> Result<(), StoreError> {
 
 /// Parse a JSONL event file, skipping blank and unparseable lines.
 fn read_events_file(events_path: &Path) -> Result<SessionRead, StoreError> {
-    let file = match File::open(events_path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SessionRead {
-                events: Vec::new(),
-                skipped_lines: 0,
-            });
-        }
-        Err(e) => return Err(StoreError::io(events_path, e)),
-    };
-
-    let reader = BufReader::new(file);
-    let mut events = Vec::new();
-    let mut skipped_lines = 0;
-    for line in reader.lines() {
-        let line = line.map_err(|e| StoreError::io(events_path, e))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<AgentEvent>(&line) {
-            Ok(ev) => events.push(ev),
-            Err(_) => skipped_lines += 1,
-        }
-    }
+    let (events, skipped_lines) = read_jsonl(events_path)?;
     Ok(SessionRead {
         events,
         skipped_lines,
     })
+}
+
+/// Shared JSONL walker: parse each non-empty line as `T`, counting (not
+/// hiding) unparseable lines. A missing file reads as empty — every JSONL log
+/// in the store shares this open/skip/count policy.
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<(Vec<T>, usize), StoreError> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+        Err(e) => return Err(StoreError::io(path, e)),
+    };
+
+    let mut items = Vec::new();
+    let mut skipped_lines = 0;
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|e| StoreError::io(path, e))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<T>(&line) {
+            Ok(item) => items.push(item),
+            Err(_) => skipped_lines += 1,
+        }
+    }
+    Ok((items, skipped_lines))
 }
 
 /// Single-writer, append-only handle over one session's `events.jsonl`.
@@ -201,6 +270,8 @@ fn read_events_file(events_path: &Path) -> Result<SessionRead, StoreError> {
 pub struct SessionWriter {
     events_path: PathBuf,
     file: File,
+    raw_path: PathBuf,
+    raw_file: File,
 }
 
 impl SessionWriter {
@@ -218,9 +289,29 @@ impl SessionWriter {
         Ok(())
     }
 
+    /// Append one raw source record as a single JSONL line and flush it. The
+    /// verbatim payload lives in [`RawRecord::raw`]; serde escaping keeps it on
+    /// one physical line even if the original payload spanned several.
+    pub fn append_raw(&mut self, record: &RawRecord) -> Result<(), StoreError> {
+        let mut line = serde_json::to_string(record)?;
+        line.push('\n');
+        self.raw_file
+            .write_all(line.as_bytes())
+            .map_err(|e| StoreError::io(&self.raw_path, e))?;
+        self.raw_file
+            .flush()
+            .map_err(|e| StoreError::io(&self.raw_path, e))?;
+        Ok(())
+    }
+
     /// Path to the event log this writer appends to.
     pub fn events_path(&self) -> &Path {
         &self.events_path
+    }
+
+    /// Path to the raw source log this writer appends to.
+    pub fn raw_path(&self) -> &Path {
+        &self.raw_path
     }
 }
 
@@ -361,6 +452,62 @@ mod tests {
         assert!(store
             .open("9f8c1e2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b", CREATED_TS)
             .is_ok());
+    }
+
+    #[test]
+    fn append_raw_then_read_raw_round_trips_verbatim() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("sess-raw", CREATED_TS).unwrap();
+
+        // A payload with embedded newlines must survive as one JSONL line.
+        let rec = RawRecord {
+            v: SCHEMA_VERSION,
+            ts: CREATED_TS,
+            session: "sess-raw".to_string(),
+            raw_ref: "raw-0".to_string(),
+            raw: "{\"a\":1,\n\"b\":\"x\\ny\"}".to_string(),
+        };
+        writer.append_raw(&rec).unwrap();
+
+        let back = store.read_raw("sess-raw").unwrap();
+        assert_eq!(back.skipped_lines, 0);
+        assert_eq!(back.records, vec![rec]);
+    }
+
+    #[test]
+    fn read_raw_is_empty_for_new_session() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let read = store.read_raw("nope").unwrap();
+        assert!(read.records.is_empty());
+        assert_eq!(read.skipped_lines, 0);
+    }
+
+    #[test]
+    fn read_raw_counts_corrupted_lines_instead_of_hiding_them() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("sess-raw-bad", CREATED_TS).unwrap();
+        let rec = RawRecord {
+            v: SCHEMA_VERSION,
+            ts: CREATED_TS,
+            session: "sess-raw-bad".to_string(),
+            raw_ref: "raw-0".to_string(),
+            raw: "{}".to_string(),
+        };
+        writer.append_raw(&rec).unwrap();
+        {
+            let mut raw = OpenOptions::new()
+                .append(true)
+                .open(writer.raw_path())
+                .unwrap();
+            raw.write_all(b"not a raw record\n").unwrap();
+        }
+
+        let read = store.read_raw("sess-raw-bad").unwrap();
+        assert_eq!(read.records, vec![rec]);
+        assert_eq!(read.skipped_lines, 1);
     }
 
     #[test]
