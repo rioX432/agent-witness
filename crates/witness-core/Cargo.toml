@@ -1,0 +1,12 @@
+[package]
+name = "agent-witness-core"
+version = "0.1.0"
+description = "Event model, session store, and adapters for agent-witness"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://claude.ai/schemas/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(./gradlew *)",
+      "Bash(gradle *)",
+      "Bash(python *)",
+      "Bash(pip *)",
+      "Bash(pytest *)",
+      "Bash(xcodebuild *)",
+      "Bash(swift *)",
+      "Bash(pod *)",
+      "Bash(brew *)",
+      "Bash(gh *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(pnpm *)",
+      "Bash(yarn *)",
+      "Bash(bun *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(rm *.tmp)",
+      "Bash(rm *.log)",
+      "Bash(ls *)",
+      "Bash(which *)",
+      "Bash(java -version)",
+      "Bash(kotlin -version)",
+      "Bash(ruby *)",
+      "Bash(bundler *)",
+      "Bash(bundle *)",
+      "Bash(fastlane *)",
+      "Bash(adb *)",
+      "Bash(emulator *)",
+      "Bash(xcrun *)",
+      "Bash(open *)",
+      "Bash(curl *)",
+      "Bash(sqlite3 *)",
+      "Bash(docker *)",
+      "Bash(docker-compose *)",
+      "Bash(ktlint *)",
+      "Bash(swiftlint *)"
+    ],
+    "deny": [
+      "Bash(cat .env*)",
+      "Bash(echo *secret*)",
+      "Bash(echo *password*)",
+      "Bash(echo *api_key*)",
+      "Bash(curl *credentials*)",
+      "Edit(*.pbxproj)",
+      "Write(*.pbxproj)"
+    ]
+  },
+  "preferences": {
+    "attribution": false
+  },
+  "autoMode": {
+    "hard_deny": [
+      "Never delete production databases or run DROP TABLE",
+      "Never force push to main or master",
+      "Never modify .env files or commit secrets",
+      "Never run rm -rf on project root or home directory"
+    ]
+  }
+}

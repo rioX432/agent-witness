@@ -1,0 +1,215 @@
+---
+name: dev-all
+description: "Process issues sequentially: /dev per issue in isolated sub-agent → CI wait → merge → next"
+argument-hint: "[issue numbers, e.g. #42 #43 #44, or empty for all open issues]"
+user-invocable: true
+disable-model-invocation: true
+allowed-tools:
+  - Bash(git checkout:*)
+  - Bash(git pull:*)
+  - Bash(git log:*)
+  - Bash(git status)
+  - Bash(git branch:*)
+  - Bash(gh pr create:*)
+  - Bash(gh pr merge:*)
+  - Bash(gh pr view:*)
+  - Bash(gh pr checks:*)
+  - Bash(gh issue view:*)
+  - Bash(gh issue list:*)
+  - Glob
+  - Grep
+  - Read
+  - Agent
+  - Skill
+  - TaskCreate
+  - TaskUpdate
+  - TaskList
+  - TaskGet
+  - AskUserQuestion
+---
+
+# /dev-all — Sequential Issue Processing
+
+Process multiple GitHub Issues sequentially. Each issue runs `/dev` in an isolated sub-agent, then waits for CI and merges before proceeding to the next.
+
+**Arguments:** $ARGUMENTS
+
+## Why Per-Issue (not Single Branch)?
+
+Each issue gets its own branch, PR, and merge cycle:
+- **Clean git history**: each PR is atomic and reviewable
+- **CI validates each change independently**
+- **Merge conflicts are impossible**: each issue starts from latest main
+- **Rollback is easy**: revert a single PR, not a batch
+
+---
+
+## Step 0: Core Value Check (GATE)
+
+1. Read the project's `CLAUDE.md` and look for `## Core Values` section
+2. **If missing**: Warn the user that Core Values are undefined. Ask if they want to:
+   - Define Core Values now (recommended)
+   - Proceed without the filter (not recommended — risk of feature bloat)
+3. If user chooses to proceed without, log a warning in the final report
+
+---
+
+## Step 1: Resolve Target Issues
+
+**If `$ARGUMENTS` is provided:** Extract issue numbers.
+**If empty:** Fetch all open issues:
+```bash
+gh issue list --state open --json number,title,labels,body --limit 100
+```
+
+### 1a. Filter Issues
+
+- **Skip issues labeled `won't`** — these are explicitly decided not to implement
+- **Skip issues listed in CLAUDE.md `## Won't Do`** — cross-reference issue titles
+
+---
+
+## Step 2: Parallel Investigation (Read-Only)
+
+Launch **parallel Explore agents** (one per issue) to quickly understand scope:
+
+Each agent:
+1. `gh issue view {NUMBER} --json title,body,labels,comments`
+2. Grep/Glob to find related code
+3. Return: summary, affected files, estimated scope, dependencies
+
+---
+
+## Step 3: Dependency Analysis & Order
+
+### 3a. Detect Dependencies
+Check issue bodies for: `blocked by #N`, `depends on #N`, `after #N`
+
+### 3b. Execution Order
+Topological sort:
+1. Independent issues first (ascending by number)
+2. Dependent issues after their dependencies
+3. Circular dependencies → skip, report
+
+---
+
+## ── AskUserQuestion: Execution Plan ──
+
+Present:
+1. Ordered list of issues
+2. Dependencies detected
+3. Skipped issues (with reasons — including `won't` label and Won't Do matches)
+4. Estimated scope per issue
+5. **Core Value alignment per issue** (if Core Values are defined)
+
+Ask user to confirm before proceeding.
+
+---
+
+## Step 4: Sequential Issue Loop
+
+Create a master task tracker:
+```
+TaskCreate for each issue: "#{number}: {title}"
+```
+
+### For each issue (in order):
+
+#### 4a. Pull latest main
+```bash
+git checkout main && git pull origin main
+```
+
+#### 4b. Run /dev in isolated sub-agent (autonomous via /goal)
+```
+Agent(
+  prompt: "/goal 'Issue #{issue_number} is resolved: tests pass, review has no Critical findings, and PR is created' /dev #{issue_number}",
+  model: "opus",
+  isolation: "worktree"
+)
+```
+
+The sub-agent:
+- Gets a fresh context (no pollution from previous issues)
+- Works in an isolated git worktree (no file conflicts)
+- Runs the full /dev workflow autonomously via /goal
+- Skips AskUserQuestion confirmations (proceeds with best judgment)
+- Returns: structured result with PR URL, review status, and counts
+
+#### 4b-result. Review Validation
+
+After the sub-agent completes, validate the result before proceeding to merge:
+
+1. Read `workspace/{issue}/review.json` to get the structured review output
+2. Parse the sub-agent's return value for review status
+
+**Decision logic:**
+
+| Review Status | Action |
+|---------------|--------|
+| `critical` (critical_count > 0) | **Skip this issue.** Report to user: "#{issue} has {N} critical findings — skipping." Mark task as failed. Proceed to next issue. |
+| `warnings` (warning_count > 0) | **Report to user.** `AskUserQuestion`: "#{issue} PR has {N} unresolved warnings. Merge anyway?" If yes → proceed. If no → skip. |
+| `clean` | **Proceed to auto-merge.** |
+| Sub-agent failed (`status: "failed"`) | **Skip this issue.** Report failure reason. Proceed to next issue. |
+
+#### 4c. Enable auto-merge
+```bash
+gh pr merge {PR_URL} --auto --merge --delete-branch
+```
+
+#### 4d. Wait for merge
+Poll until merged (check every 30 seconds, timeout 15 minutes):
+```bash
+STATE=$(gh pr view {PR_URL} --json state -q '.state')
+```
+
+If CI fails:
+1. Report the failure to user
+2. Ask: skip this issue and continue, or stop?
+
+#### 4e. Mark task completed and proceed
+
+---
+
+## Step 5: Final Report
+
+```
+## Batch Development Summary
+
+| # | Issue | PR | Status |
+|---|-------|----|--------|
+| 1 | #{42} Title | PR_URL | Merged |
+| 2 | #{43} Title | PR_URL | Merged |
+| 3 | #{44} Title | — | Skipped (CI failed) |
+
+Completed: N / M issues
+```
+
+Mark all tasks `completed`.
+
+---
+
+## Autonomous Mode (/goal)
+
+When the user invokes `/dev-all` with `/goal`, the entire batch runs autonomously:
+
+```
+/goal "All issues in $ARGUMENTS are resolved: each has a merged PR or a documented skip reason"
+```
+
+In autonomous mode:
+- Skip `AskUserQuestion` confirmations — proceed with best judgment
+- On CI failure: skip the issue and continue (don't stop)
+- Stop only on 3 consecutive failures
+
+## Error Handling
+
+| Situation | Action |
+|-----------|--------|
+| Issue not found | Skip, warn in report |
+| Circular dependency | Skip affected issues, report |
+| Sub-agent /dev fails | Ask user: skip or stop |
+| CI fails | Ask user: skip or stop |
+| Merge conflict | Ask user: skip or stop |
+| 3 consecutive failures | Stop, report to user |
+| Auto-merge timeout (15min) | Report, ask user |
