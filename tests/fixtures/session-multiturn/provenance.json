@@ -1,0 +1,23 @@
+{
+  "scenario": "session-multiturn",
+  "provenance": "real-captured",
+  "description": "Multi-turn session (issue #23): two assistant turns in one session_id. Turn 1 writes notes.txt; turn 2 (resumed via `claude -p --continue`) edits it. Each turn ends with its own Stop hook, and events continue after the first Stop — the canary for 'Stop fires per-turn, not per-session'.",
+  "captured_with": "Claude Code 2.1.198",
+  "captured_on": "2026-07-02",
+  "hook_payload_schema": 1,
+  "sanitized_by": "tools/fixtures/sanitize.py",
+  "event_count": 10,
+  "event_sequence": [
+    "SessionStart(startup)",
+    "UserPromptSubmit",
+    "PreToolUse(Write)",
+    "PostToolUse(Write)",
+    "Stop",
+    "SessionStart(resume)",
+    "UserPromptSubmit",
+    "PreToolUse(Edit)",
+    "PostToolUse(Edit)",
+    "Stop"
+  ],
+  "notes": "Captured with a two-prompt headless run: `claude -p <turn1>` then `claude -p --continue <turn2>`, both pointing the SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop hooks at one append-only dump. The `--continue` resume emits a second SessionStart with source=resume (a genuine, observed upstream behavior), so the same session_id carries two turns. The load-bearing fact for liveness (issue #23) is the mid-stream Stop at index 4 followed by more events: a live session reads live mid-turn and idle between turns, never terminally stopped."
+}

@@ -48,8 +48,11 @@ agent-witness top             # resident view of live sessions; Enter drills int
 agent-witness show --follow   # tail one session's timeline (unifies with the in-TUI `f` toggle)
 ```
 
-A session is **live** when it has started, has not stopped, and its last event is
-within a recency window (default 5 min, `--window <seconds>`). Liveness is
+A session is **live** when it has started, its last event is not a `Stop`
+(it is mid-turn), and that event is within a recency window (default 5 min,
+`--window <seconds>`). Claude Code's `Stop` hook fires at the end of *every*
+assistant turn — not at session end — so a live session between turns reads as
+idle and flips back to live the moment its next turn begins. Liveness is
 *inferred* from a store scan — no daemon required — so a crashed agent reads as
 live until its window lapses, then flips to idle. We label that honestly rather
 than claim certainty (ADR-0002).
