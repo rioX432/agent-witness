@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use agent_witness::init::{self, InitOutcome, InitReport};
+use agent_witness::report::{self, JsonExporter, MarkdownExporter, SessionExporter};
 use agent_witness::{emit, ls, paths, tui, watch};
 use agent_witness_core::{Clock, SessionStore, SystemClock};
 use anyhow::Result;
@@ -36,6 +37,18 @@ enum Command {
     Ls,
     /// Open the interactive timeline viewer for a recorded session.
     Show(ShowArgs),
+    /// Print a shareable markdown (or --json) audit report for a session.
+    Report(ReportArgs),
+}
+
+/// Arguments for `agent-witness report`.
+#[derive(Debug, Args)]
+struct ReportArgs {
+    /// Session id to report on (a directory under the session store).
+    session: String,
+    /// Emit machine-readable JSON instead of markdown (same data).
+    #[arg(long)]
+    json: bool,
 }
 
 /// Arguments for `agent-witness show`.
@@ -113,6 +126,25 @@ async fn main() -> Result<()> {
             // The viewer drives a blocking crossterm event loop; keep it off the
             // async reactor so polling never starves other runtime work.
             tokio::task::spawn_blocking(move || tui::run_show(&store, &args.session)).await??;
+        }
+        Command::Report(args) => {
+            let paths = paths::resolve()?;
+            let store = SessionStore::new(&paths.sessions_root);
+            let read = store.read(&args.session)?;
+            // Prefer the recorded session start; fall back to the first event's
+            // time. All times derive from event data — no wall-clock (determinism).
+            let started_ms = store
+                .read_meta(&args.session)
+                .ok()
+                .map(|m| m.created_ts)
+                .or_else(|| read.events.first().map(|e| e.ts));
+            let report = report::build_report(&args.session, &read, started_ms);
+            let rendered = if args.json {
+                JsonExporter.export(&report)?
+            } else {
+                MarkdownExporter.export(&report)?
+            };
+            print!("{rendered}");
         }
     }
 
