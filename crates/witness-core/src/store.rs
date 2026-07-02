@@ -185,6 +185,39 @@ impl SessionStore {
         read_events_file(&events_path)
     }
 
+    /// List the ids of all stored sessions, sorted ascending.
+    ///
+    /// Enumerates immediate sub-directories of the sessions root whose names are
+    /// valid session ids. A missing root reads as no sessions (not an error), so
+    /// this is safe to call before anything has been recorded.
+    pub fn list_sessions(&self) -> Result<Vec<String>, StoreError> {
+        let entries = match fs::read_dir(&self.sessions_root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StoreError::io(&self.sessions_root, e)),
+        };
+
+        let mut ids = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| StoreError::io(&self.sessions_root, e))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|e| StoreError::io(entry.path(), e))?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            // Only surface directories whose names are valid session ids, so a
+            // stray file or unrelated directory never masquerades as a session.
+            if let Some(name) = entry.file_name().to_str() {
+                if is_valid_session_id(name) {
+                    ids.push(name.to_string());
+                }
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
     /// Load a session's metadata.
     pub fn read_meta(&self, session_id: &str) -> Result<SessionMeta, StoreError> {
         validate_session_id(session_id)?;
@@ -508,6 +541,37 @@ mod tests {
         let read = store.read_raw("sess-raw-bad").unwrap();
         assert_eq!(read.records, vec![rec]);
         assert_eq!(read.skipped_lines, 1);
+    }
+
+    #[test]
+    fn list_sessions_is_empty_before_any_recording() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path().join("does-not-exist-yet"));
+        assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_sessions_returns_opened_sessions_sorted() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        store.open("sess-c", CREATED_TS).unwrap();
+        store.open("sess-a", CREATED_TS).unwrap();
+        store.open("sess-b", CREATED_TS).unwrap();
+
+        assert_eq!(
+            store.list_sessions().unwrap(),
+            vec!["sess-a", "sess-b", "sess-c"]
+        );
+    }
+
+    #[test]
+    fn list_sessions_ignores_stray_files() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        store.open("real-session", CREATED_TS).unwrap();
+        fs::write(tmp.path().join("stray.txt"), b"not a session").unwrap();
+
+        assert_eq!(store.list_sessions().unwrap(), vec!["real-session"]);
     }
 
     #[test]

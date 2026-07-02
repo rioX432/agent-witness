@@ -6,6 +6,10 @@
 
 pub mod emit;
 pub mod init;
+pub mod ls;
 pub mod paths;
+pub mod timefmt;
+pub mod timeline;
 pub mod transcript;
+pub mod tui;
 pub mod watch;

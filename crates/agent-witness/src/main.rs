@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use agent_witness::init::{self, InitOutcome, InitReport};
-use agent_witness::{emit, paths, watch};
-use agent_witness_core::{Clock, SystemClock};
+use agent_witness::{emit, ls, paths, tui, watch};
+use agent_witness_core::{Clock, SessionStore, SystemClock};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use tokio::io::AsyncReadExt;
@@ -32,6 +32,17 @@ enum Command {
     Emit(TranscriptArgs),
     /// Run the unix socket server: receive hook payloads, normalize, and store.
     Watch(TranscriptArgs),
+    /// List recorded sessions (start time, event/tool counts, duration).
+    Ls,
+    /// Open the interactive timeline viewer for a recorded session.
+    Show(ShowArgs),
+}
+
+/// Arguments for `agent-witness show`.
+#[derive(Debug, Args)]
+struct ShowArgs {
+    /// Session id to view (a directory under the session store).
+    session: String,
 }
 
 /// Arguments for `agent-witness init`.
@@ -89,6 +100,19 @@ async fn main() -> Result<()> {
                 },
             )
             .await?;
+        }
+        Command::Ls => {
+            let paths = paths::resolve()?;
+            let store = SessionStore::new(&paths.sessions_root);
+            let rows = ls::collect_rows(&store)?;
+            print!("{}", ls::render_table(&rows));
+        }
+        Command::Show(args) => {
+            let paths = paths::resolve()?;
+            let store = SessionStore::new(&paths.sessions_root);
+            // The viewer drives a blocking crossterm event loop; keep it off the
+            // async reactor so polling never starves other runtime work.
+            tokio::task::spawn_blocking(move || tui::run_show(&store, &args.session)).await??;
         }
     }
 
