@@ -8,6 +8,7 @@ pub mod emit;
 pub mod init;
 pub mod ls;
 pub mod paths;
+pub mod pick;
 pub mod report;
 pub mod timefmt;
 pub mod timeline;
