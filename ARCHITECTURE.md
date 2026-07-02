@@ -7,25 +7,28 @@ This document describes how the pieces fit together. Design rationale lives in
 
 ## Event flow
 
+```mermaid
+flowchart TD
+    CC["Claude Code session"]
+    EMIT["agent-witness emit<br/>(bridge invoked by each hook)"]
+    WATCH["agent-witness watch<br/>(optional daemon — tokio unix-socket server)"]
+    STORE[("JSONL session store<br/>~/.agent-witness/sessions/&lt;session-id&gt;/<br/>events.jsonl · raw.jsonl · meta.json")]
+    TUI["TUI<br/>show / top / --pick"]
+    REPORT["report<br/>markdown / JSON"]
+    LS["ls"]
+
+    CC -->|"SessionStart / UserPromptSubmit / PreToolUse /<br/>PostToolUse / Stop hooks (JSON on stdin)"| EMIT
+    EMIT -->|"unix socket + persistence ack"| WATCH
+    EMIT -.->|"fallback: direct write when<br/>no daemon is running"| STORE
+    WATCH -->|"normalize (pure) + persist<br/>raw payload verbatim"| STORE
+    STORE --> TUI
+    STORE --> REPORT
+    STORE --> LS
 ```
-Claude Code session
-    │  SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop
-    │  hooks (JSON on stdin)
-    ▼
-agent-witness emit          ── bridge invoked by each hook
-    │  unix socket ($XDG_RUNTIME_DIR or ~/.agent-witness/witness.sock)
-    │  └─ fallback: writes to the store directly when no daemon is running
-    ▼
-agent-witness watch         ── optional daemon (tokio unix-socket server)
-    │  normalize (pure) + persist raw payload verbatim
-    ▼
-JSONL session store         ── ~/.agent-witness/sessions/<session-id>/
-    │     events.jsonl  (one AgentEvent per line, schema v1)
-    │     raw.jsonl     (hook stdin preserved verbatim — the canonical record)
-    │     meta.json
-    ▼
-TUI (show / top / --pick) · markdown & JSON report · ls
-```
+
+The store keeps `events.jsonl` (one `AgentEvent` per line, schema v1) next to
+`raw.jsonl` (the hook stdin preserved verbatim — the canonical record) and
+`meta.json`.
 
 Two properties are load-bearing:
 
