@@ -20,10 +20,11 @@ agent-witness show            # replay the latest session for this directory
 agent-witness report          # print a shareable markdown audit of it
 ```
 
-> **Upgrading?** Re-run `agent-witness init` after updating. Releases before
-> this one registered only three hook events; re-running init adds the newer
-> ones (`SessionStart`, `UserPromptSubmit`) so prompts and live-session
-> detection work. It is idempotent and keeps a timestamped backup.
+> **Upgrading?** Re-run `agent-witness init` after updating. Earlier releases
+> registered fewer hook events; re-running init adds the newer ones
+> (`SessionStart`, `UserPromptSubmit`, `SessionEnd`) so prompts, live-session
+> detection, and direct session-end observation work. It is idempotent and
+> keeps a timestamped backup.
 
 No session id required: with no argument, `show` and `report` open the latest
 session recorded from the current directory (falling back to the globally latest
@@ -76,14 +77,16 @@ agent-witness top             # resident view of live sessions; Enter drills int
 agent-witness show --follow   # tail one session's timeline (unifies with the in-TUI `f` toggle)
 ```
 
-A session is **live** when it has started, its last event is not a `Stop`
-(it is mid-turn), and that event is within a recency window (default 5 min,
-`--window <seconds>`). Claude Code's `Stop` hook fires at the end of *every*
-assistant turn — not at session end — so a live session between turns reads as
-idle and flips back to live the moment its next turn begins. Liveness is
-*inferred* from a store scan — no daemon required — so a crashed agent reads as
-live until its window lapses, then flips to idle. We label that honestly rather
-than claim certainty (ADR-0002).
+A session is **live** when it has started, its last event is not a `Stop` or
+`SessionEnd` (it is mid-turn), and that event is within a recency window
+(default 5 min, `--window <seconds>`). Claude Code's `Stop` hook fires at the
+end of *every* assistant turn — not at session end — so a live session between
+turns reads as idle and flips back to live the moment its next turn begins. A
+recorded `SessionEnd` is *direct* observation: the session reads idle
+immediately, no window wait (and a resumed session flips back to live with its
+next event). Sessions that crash without a `SessionEnd` still fall back to
+window inference — a crashed agent reads as live until its window lapses, then
+flips to idle. We label that honestly rather than claim certainty (ADR-0002).
 
 **Positioning vs. abtop and usage dashboards:** `top`
 answers "what are my agents *doing* right now?" — project, the tool currently
@@ -98,7 +101,7 @@ or tmux. Recipe: [`docs/recipes/cmux.md`](docs/recipes/cmux.md).
 ## How it works
 
 Claude Code hooks (`SessionStart` / `UserPromptSubmit` / `PreToolUse` /
-`PostToolUse` / `Stop`) pipe each event into
+`PostToolUse` / `Stop` / `SessionEnd`) pipe each event into
 `agent-witness emit`, which forwards it to a unix socket — or, when no daemon is
 running, writes straight to the JSONL store. **No daemon required**; `agent-witness
 watch` is optional. The raw hook payload is preserved verbatim next to every

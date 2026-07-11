@@ -57,8 +57,8 @@ const SETTINGS_FILE: &str = "settings.json";
 /// Hook events we register, paired with whether the event takes a tool matcher.
 ///
 /// PreToolUse / PostToolUse are per-tool (matcher `*`). SessionStart,
-/// UserPromptSubmit and Stop are not tool-scoped and take no matcher (confirmed
-/// against the Claude Code hooks reference and mirrored by
+/// UserPromptSubmit, Stop and SessionEnd are not tool-scoped and take no
+/// matcher (confirmed against the Claude Code hooks reference and mirrored by
 /// `tools/fixtures/capture.sh`). This set MUST stay identical to the events
 /// capture.sh registers, or fixtures and real sessions drift and the pipeline
 /// silently loses events (issue #26); `init_and_capture_register_same_events`
@@ -69,6 +69,7 @@ const MANAGED_HOOKS: &[(&str, bool)] = &[
     ("PreToolUse", true),
     ("PostToolUse", true),
     ("Stop", false),
+    ("SessionEnd", false),
 ];
 
 /// What `init` did — surfaced for the CLI report and asserted in tests.
@@ -397,7 +398,7 @@ mod tests {
         assert_eq!(report.outcome, InitOutcome::Installed);
 
         let root = read_json(&path);
-        // All five events registered exactly once.
+        // Every managed event registered exactly once.
         for (event, _) in MANAGED_HOOKS {
             assert_eq!(own_group_count(&root, event), 1, "for {event}");
         }

@@ -1,9 +1,10 @@
 //! Transcript bridge: trigger the best-effort transcript adapter at the edge.
 //!
-//! Hooks are canonical (ADR-0001). Once a turn ends (`Stop`), the transcript
-//! file is complete, so this reads exactly the `transcript_path` the hook payload
-//! carries — never a glob (CLAUDE.md) — and hands its contents to the core
-//! [`Receiver`] as supplementary `Observed` events.
+//! Hooks are canonical (ADR-0001). Once a turn ends (`Stop`) or the session
+//! terminates (`SessionEnd`), the transcript file is complete, so this reads
+//! exactly the `transcript_path` the hook payload carries — never a glob
+//! (CLAUDE.md) — and hands its contents to the core [`Receiver`] as
+//! supplementary `Observed` events.
 //!
 //! Isolation is the contract (issue #4): the transcript is a secondary source
 //! and DEFAULT ON, but any failure here — disabled, wrong hook, missing path,
@@ -16,10 +17,10 @@ use serde_json::Value;
 /// Transcript ingestion is on unless explicitly disabled (`--no-transcript`).
 pub const TRANSCRIPT_ENABLED_DEFAULT: bool = true;
 
-/// If enabled and `payload` is a `Stop` hook carrying a `transcript_path`, read
-/// that file and ingest supplementary events. Errors are isolated: logged to
-/// stderr, never propagated — canonical recording has already completed by the
-/// time this runs.
+/// If enabled and `payload` is a `Stop` or `SessionEnd` hook carrying a
+/// `transcript_path`, read that file and ingest supplementary events. Errors
+/// are isolated: logged to stderr, never propagated — canonical recording has
+/// already completed by the time this runs.
 pub fn ingest_on_stop(receiver: &mut Receiver, payload: &str, clock: &dyn Clock, enabled: bool) {
     if !enabled {
         return;
@@ -28,8 +29,9 @@ pub fn ingest_on_stop(receiver: &mut Receiver, payload: &str, clock: &dyn Clock,
         Ok(v) => v,
         Err(_) => return, // not JSON: the receiver already recorded it as an error event
     };
-    // Only act at end-of-turn, when the transcript is complete.
-    if hooks::hook_event_name_of(&value) != Some(hooks::HOOK_STOP) {
+    // Only act at end-of-turn or session end, when the transcript is complete.
+    let event_name = hooks::hook_event_name_of(&value);
+    if event_name != Some(hooks::HOOK_STOP) && event_name != Some(hooks::HOOK_SESSION_END) {
         return;
     }
     let session = match hooks::session_id_of(&value) {

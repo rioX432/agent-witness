@@ -67,6 +67,13 @@ pub enum EventKind {
     ToolFailure,
     /// The agent stopped / a turn ended.
     Stop,
+    /// The session terminated (Claude Code `SessionEnd`). Unlike [`Stop`],
+    /// which fires per turn, this fires once at real session end and carries a
+    /// `reason` (`clear` / `logout` / `prompt_input_exit` / ...) in the
+    /// payload. A resumed session can still append events after one.
+    ///
+    /// [`Stop`]: EventKind::Stop
+    SessionEnd,
     /// The recorder itself could not process an input (e.g. malformed hook
     /// JSON, a non-object payload, a missing required field, or an unmapped
     /// hook event). Recorded rather than dropped so nothing is silently lost.
