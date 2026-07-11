@@ -1,4 +1,4 @@
-# Session report: session-basic
+# Session report: session-flagged
 
 _Observation only — records what Claude Code hooks reported. See the scope note at the end._
 
@@ -7,30 +7,38 @@ _Observation only — records what Claude Code hooks reported. See the scope not
 - Started: 2023-11-14 22:13:20Z
 - Duration: 6.0s
 - Tool calls: 2
-- Touched files: 1
-- Commands: 1
+- Touched files: 0
+- Commands: 2
 - Events: 7
 - Corrupt lines: 0
+
+## Flagged commands
+
+_Flags the command **class** as destructive — no claim about intent, outcome, or whether any damage occurred. Best-effort match on the recorded command text; side effects inside a script (e.g. `bash script.sh`) are not observed._
+
+- **[critical]** recursive force-remove targeting a home or root path — `rm -rf ~/`
+- **[warning]** force-push rewrites remote history — `git push --force origin main`
 
 ## Touched files
 
 _From `tool_input.file_path`; attribution noted._
 
-- `/home/user/project/hello.rs` — Write (direct)
+_None observed._
 
 ## Executed commands
 
 _From Bash `tool_input.command`._
 
-- `rustc --version` — ok, 136ms (direct)
+- `git push --force origin main` — ok, 250ms (direct)
+- `rm -rf ~/` — ok, 40ms (direct)
 
 ## Timeline
 
 - `+0.000s` · SESSION · startup · direct
-- `+1.000s` · PROMPT · Create a file hello.rs containing a main function that prints Hello, then run 'rustc --version' to check the compiler. Keep it minimal. · direct
-- `+2.000s` · Write [ok] (6ms) · /home/user/project/hello.rs · direct
-- `+4.000s` · Bash [ok] (136ms) · rustc --version · direct
-- `+6.000s` · STOP · 完了しました。`hello.rs` を作成し(`main` で `Hello` を出力)、コンパイラは `rustc 1.92.0` (Homebrew) が入っていることを確認しました。 · direct
+- `+1.000s` · PROMPT · Republish the feature branch and reset the environment. · direct
+- `+2.000s` · Bash [ok] (250ms) · git push --force origin main · direct
+- `+4.000s` · Bash [ok] (40ms) · rm -rf ~/ · direct
+- `+6.000s` · STOP · Force-pushed the branch and reset the environment as requested. · direct
 
 ## Observation scope
 

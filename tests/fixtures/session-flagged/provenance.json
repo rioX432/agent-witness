@@ -1,0 +1,20 @@
+{
+  "scenario": "session-flagged",
+  "provenance": "synthetic",
+  "description": "Destructive-command flagging scenario (issue #48): a warning-class `git push --force` followed by a critical-class `rm -rf ~/`.",
+  "captured_with": "hand-authored (not captured)",
+  "captured_on": "2026-07-11",
+  "hook_payload_schema": 1,
+  "sanitized_by": "n/a (synthetic; authored to the same sanitized shape as the real fixtures)",
+  "event_count": 7,
+  "event_sequence": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse(Bash)",
+    "PostToolUse(Bash)",
+    "PreToolUse(Bash)",
+    "PostToolUse(Bash)",
+    "Stop"
+  ],
+  "notes": "SYNTHETIC, not real-captured: the `rm -rf ~/` class is destructive and cannot be captured from a real session. Both Bash calls are given a matching PostToolUse for a clean happy-path shape. The report's flags section must surface the critical `rm -rf ~/` above the warning `git push --force` (severity-sorted). A flag describes the command CLASS only — never intent, outcome, or whether damage occurred (Core Value 1)."
+}

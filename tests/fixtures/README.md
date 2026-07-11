@@ -7,7 +7,8 @@ payload, verbatim from a real session except for mechanical sanitization.
 
 ## Provenance: REAL captures (not synthetic)
 
-Both scenarios were recorded from real headless Claude Code sessions
+The `session-basic`, `session-with-failure`, and `session-multiturn` scenarios
+were recorded from real headless Claude Code sessions
 (`claude -p ... --settings <hook-dump> --max-turns N`), captured with
 Claude Code **2.1.198**, then run through `tools/fixtures/sanitize.py`.
 Per-scenario details live in each `provenance.json`.
@@ -16,6 +17,10 @@ If a fixture is ever added synthetically (e.g. capture unavailable), it MUST set
 `"provenance": "synthetic"` in its `provenance.json` and say so here. Never label
 a synthetic fixture as real — honest observation is the project's Core Value.
 
+**Synthetic scenario:** `session-flagged` (issue #48) is `"provenance":
+"synthetic"` — the destructive `rm -rf ~/` class cannot be captured from a real
+session, so it is hand-authored to the same sanitized payload shape.
+
 ## Scenarios
 
 | Directory | Flow | Why it matters |
@@ -23,6 +28,7 @@ a synthetic fixture as real — honest observation is the project's Core Value.
 | `session-basic/` | Write a file, run `rustc --version`; both succeed | Happy path: every PreToolUse has a matching PostToolUse |
 | `session-with-failure/` | A Bash call fails (missing file), a diagnostic succeeds | Failure path: a failed Bash call fires **no** PostToolUse (see below) |
 | `session-multiturn/` | Two turns in one session (turn 2 resumed via `--continue`): write then edit a file | Liveness canary (issue #23): a `Stop` at index 4 is followed by more events, proving `Stop` fires per-turn, not per-session |
+| `session-flagged/` | **Synthetic**: `git push --force` then `rm -rf ~/` | Destructive-command flagging (issue #48): report's flags section, severity-sorted (critical `rm -rf ~/` above warning force-push) |
 
 ## Transcript fixture (issue #4)
 

@@ -105,6 +105,44 @@ fn golden_failure_report() {
 }
 
 #[test]
+fn golden_flagged_report() {
+    // A session containing a destructive command must render the flags section,
+    // severity-sorted (critical `rm -rf ~/` above warning `git push --force`).
+    let markdown = render_markdown("session-flagged");
+    assert!(
+        markdown.contains("## Flagged commands"),
+        "flagged report must render the flags section:\n{markdown}"
+    );
+    // Honesty framing: class-only, never intent (Core Value 1 / ADR-0002).
+    assert!(
+        markdown.contains("no claim about intent"),
+        "flags section must carry the class-not-intent caveat:\n{markdown}"
+    );
+    // Critical row appears before the warning row.
+    let critical = markdown
+        .find("recursive force-remove targeting a home or root path")
+        .expect("critical rationale present");
+    let warning = markdown
+        .find("force-push rewrites remote history")
+        .expect("warning rationale present");
+    assert!(
+        critical < warning,
+        "critical must sort before warning:\n{markdown}"
+    );
+    assert_golden("report_flagged", &markdown);
+}
+
+#[test]
+fn clean_session_has_no_flagged_section() {
+    // The happy-path session runs only `rustc --version` — nothing destructive.
+    let markdown = render_markdown("session-basic");
+    assert!(
+        !markdown.contains("## Flagged commands"),
+        "a clean session must omit the flags section:\n{markdown}"
+    );
+}
+
+#[test]
 fn disclaimer_present_in_both_formats() {
     // Mechanical honesty guard (ADR-0002): the observation-scope disclaimer must
     // appear in every report, markdown and JSON alike.
@@ -155,4 +193,22 @@ fn json_output_reports_the_failure_as_no_result() {
     assert_eq!(value["commands"][0]["status"], "no-result");
     assert_eq!(value["commands"][1]["command"], "ls -la");
     assert_eq!(value["commands"][1]["status"], "ok");
+}
+
+#[test]
+fn json_output_carries_flags_severity_sorted() {
+    let session_read = read(fixture_events("session-flagged"), 0);
+    let report = build_report("session-flagged", &session_read, Some(BASE_TS));
+    let json = JsonExporter.export(&report).expect("json export");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+
+    let flags = value["flags"].as_array().expect("flags is an array");
+    assert_eq!(flags.len(), 2);
+    // Critical (`rm -rf ~/`) sorts before the warning (force-push) despite the
+    // warning command running first; severity serializes snake_case.
+    assert_eq!(value["flags"][0]["severity"], "critical");
+    assert_eq!(value["flags"][0]["pattern"], "rm-rf-home-root");
+    assert_eq!(value["flags"][0]["command"], "rm -rf ~/");
+    assert_eq!(value["flags"][1]["severity"], "warning");
+    assert_eq!(value["flags"][1]["pattern"], "git-force-push");
 }
