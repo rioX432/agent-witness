@@ -7,12 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-07-12
+
+The retrospective-usage release: turn the record into an answer to "what did my
+agents actually do — and on whose tokens?" A cross-session delegation ledger, a
+configured-vs-used capability inventory, per-session model/token usage, and
+destructive-command flags — all facts-only, with the judgment left to you (or a
+scheduled agent).
+
 ### Added
-- Weekly usage-audit recipe (`docs/recipes/scheduled-audit.md`): a Claude Code scheduled routine (created with `/schedule`) runs `agent-witness digest --week --json` and narrates the interpretation — wasteful interaction loops, oversized-model usage for mechanical work, top projects by delegated work, notable destructive-command flags. The facts/judgment split is load-bearing: the CLI reports FACTS ONLY, the agent supplies the judgment, and the audit is a convenience view — the record (`show`/`report`), not an agent's retelling, stays the trusted read path (doubly so since the audit agent is the same kind of agent the record observes). The `/witness` skill gains a matching "Usage audit" section and pre-authorizes `digest`/`inventory` (re-run `agent-witness init` to update the installed skill) (#49)
 - `digest` command: a cross-session **delegation ledger** that aggregates every recorded session in a time window (`--today` / `--week` / `--since <dur>`, or all history), grouped by project, into a factual markdown (or `--json`) summary — sessions, durations, user prompts, tool calls, distinct files, Bash commands, destructive-class command-flag counts by severity, and per-model token totals. Windows are UTC calendar days (stated explicitly in the header); a session is included by its start time and contributes its whole totals. Facts only: no efficiency/waste/model-choice judgments (those belong to the agent layer), a missing usage sidecar is surfaced as "usage unavailable" and never counted as zero tokens, prompts count only hook-sourced turns (not transcript prose), and multi-cwd / unknown-project / corrupt-line states are disclosed (#45)
+- `inventory` command: reports which MCP servers and skills are **configured** — unioned across `~/.claude.json` (user-global and per-project `mcpServers`) and a project `.mcp.json` — versus **actually used** (aggregated from recorded `mcp__*` / `Skill` tool calls, with call counts and last-used), plus the diff (configured-not-used / used-not-configured). Configured and used are separately labeled and never conflated; each config source carries a read status (read / missing / unreadable / parse-failed) and the report states whether the diff is complete or partial, so an unreadable source is never silently shown as empty. `~/.claude.json` is parsed keys-only — no MCP server secret (env/token) is ever read. `--since <dur>` windows the used side (#50)
+- Per-message **model + token usage** extraction: the transcript adapter aggregates each session's Claude Code usage — per-model input/output/cache tokens, deduped by message id so a response split across content-block lines is counted once — into a per-session `usage.json` sidecar (`observed` attribution), read cheaply by `digest`. Honest coverage: an absent sidecar means "usage unavailable", explicitly distinct from zero tokens (#46)
+- Destructive-command **flagging** in `report`: recorded Bash commands whose class is destructive — `rm -rf` of a home/root path, `git push --force`, `git clean -fd(x)`, `chmod -R 777`, `curl … | sh`, `dd`/`mkfs` to a device — are flagged with a severity. A flag names the command *class* only, never intent or outcome, and cannot see side effects inside `Bash("script.sh")`; the matcher is token-based and deliberately narrow (only catastrophic `rm -rf` targets, anchored on the leading command) to keep false positives near zero (#48)
+- Weekly usage-audit recipe (`docs/recipes/scheduled-audit.md`): a Claude Code scheduled routine (created with `/schedule`) runs `agent-witness digest --week --json` and narrates the interpretation — wasteful interaction loops, oversized-model usage for mechanical work, top projects by delegated work, notable destructive-command flags. The facts/judgment split is load-bearing: the CLI reports FACTS ONLY, the agent supplies the judgment, and the audit is a convenience view — the record (`show`/`report`), not an agent's retelling, stays the trusted read path (doubly so since the audit agent is the same kind of agent the record observes). The `/witness` skill gains a matching "Usage audit" section and pre-authorizes `digest`/`inventory` (re-run `agent-witness init` to update the installed skill) (#49)
 
 ### Fixed
 - `top` / `show` no longer panic (with a leaked alternate-screen escape) when stdout is not a TTY — pipes, CI, and editor-embedded shells now get a one-line error pointing at the non-interactive equivalent (`ls --live` / `report`) (#40)
+- TUI startup is hardened against terminal init failing even when stdout *reports* as a TTY (e.g. Claude Code's `!` command runner, some embedded/remote shells): the entry points use ratatui's non-panicking `try_init` and, on failure, restore the terminal and print the same actionable one-line error — instead of panicking and leaking an alternate-screen escape. Defense-in-depth alongside the `require_tty` pre-check (#54)
 
 ## [0.0.4] - 2026-07-11
 
@@ -61,7 +73,9 @@ v0.1 feature set.
 - Workspace scaffold, `just verify` gate, CI mirroring the local gate, ADRs (5e26c33, 4e056ad)
 - Distribution via dist (cargo-dist): release CI on version tags, Homebrew tap, cargo-binstall metadata, shell installer (df46a90)
 
-[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/rioX432/agent-witness/compare/v0.0.4...v0.0.5
+[0.0.4]: https://github.com/rioX432/agent-witness/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/rioX432/agent-witness/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/rioX432/agent-witness/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/rioX432/agent-witness/releases/tag/v0.0.1
