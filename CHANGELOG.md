@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `digest` command: a cross-session **delegation ledger** that aggregates every recorded session in a time window (`--today` / `--week` / `--since <dur>`, or all history), grouped by project, into a factual markdown (or `--json`) summary — sessions, durations, user prompts, tool calls, distinct files, Bash commands, destructive-class command-flag counts by severity, and per-model token totals. Windows are UTC calendar days (stated explicitly in the header); a session is included by its start time and contributes its whole totals. Facts only: no efficiency/waste/model-choice judgments (those belong to the agent layer), a missing usage sidecar is surfaced as "usage unavailable" and never counted as zero tokens, prompts count only hook-sourced turns (not transcript prose), and multi-cwd / unknown-project / corrupt-line states are disclosed (#45)
+
 ### Fixed
 - `top` / `show` no longer panic (with a leaked alternate-screen escape) when stdout is not a TTY — pipes, CI, and editor-embedded shells now get a one-line error pointing at the non-interactive equivalent (`ls --live` / `report`) (#40)
 

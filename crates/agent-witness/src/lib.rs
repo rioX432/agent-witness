@@ -6,6 +6,7 @@
 
 mod backup;
 
+pub mod digest;
 pub mod emit;
 pub mod flags;
 pub mod init;
