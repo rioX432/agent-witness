@@ -88,3 +88,4 @@ Design is decided ahead (docs/adr/, zero-base design docs), but implementation m
 
 - Code comments, variable names: English
 - Commits: concise single line, English
+- GitHub Issues and PRs (titles, bodies): English — this is a public build-in-public repo
