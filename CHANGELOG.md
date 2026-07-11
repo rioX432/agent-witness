@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `init` now also installs a `/witness` skill (`~/.claude/skills/witness/SKILL.md`) so a Claude Code session can query the audit record conversationally; `init --remove` uninstalls it. The file is marker-owned: a foreign file at that path is never touched (a warning is printed to stderr), and a locally edited managed file is backed up before being rewritten or removed. **Re-run `agent-witness init` after upgrading** to install the skill (#30)
+
 ## [0.0.3] - 2026-07-02
 
 Two root causes found by dogfooding on real sessions — both made the live-session

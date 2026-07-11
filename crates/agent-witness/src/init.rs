@@ -26,7 +26,7 @@ use agent_witness_core::Clock;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 
-use crate::paths;
+use crate::{backup, paths};
 
 /// The hook command Claude Code runs; forwards one hook payload to `emit`.
 const EMIT_COMMAND: &str = "agent-witness emit";
@@ -53,8 +53,6 @@ const MATCH_ALL: &str = "*";
 const CLAUDE_DIR: &str = ".claude";
 /// Settings file name.
 const SETTINGS_FILE: &str = "settings.json";
-/// Prefix for the timestamped backup file (`settings.json.bak-<ts>`).
-const BACKUP_PREFIX: &str = ".bak-";
 
 /// Hook events we register, paired with whether the event takes a tool matcher.
 ///
@@ -306,20 +304,7 @@ fn backup_existing(path: &Path, clock: &dyn Clock) -> Result<Option<PathBuf>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(anyhow!("cannot read {} for backup: {e}", path.display())),
     };
-    let backup = backup_path(path, clock.now_ms());
-    std::fs::write(&backup, &raw)
-        .with_context(|| format!("cannot write backup {}", backup.display()))?;
-    Ok(Some(backup))
-}
-
-/// `settings.json` -> `settings.json.bak-<ts>` in the same directory.
-fn backup_path(path: &Path, ts: i64) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(std::ffi::OsStr::to_os_string)
-        .unwrap_or_default();
-    name.push(format!("{BACKUP_PREFIX}{ts}"));
-    path.with_file_name(name)
+    Ok(Some(backup::write_backup(path, &raw, clock.now_ms())?))
 }
 
 /// Serialize and write the settings object, creating parent directories as
@@ -492,7 +477,7 @@ mod tests {
         assert_eq!(report.outcome, InitOutcome::Installed);
 
         let backup = report.backup.expect("existing file must be backed up");
-        assert_eq!(backup, backup_path(&path, TS));
+        assert_eq!(backup, crate::backup::backup_path(&path, TS));
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "{}\n");
     }
 
@@ -636,7 +621,7 @@ mod tests {
         assert!(err.to_string().contains("not valid JSON"), "message: {err}");
         // File is unchanged and no backup was made.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        assert!(!backup_path(&path, TS).exists());
+        assert!(!crate::backup::backup_path(&path, TS).exists());
     }
 
     #[test]

@@ -62,7 +62,7 @@ Event flow: Claude Code hooks → unix socket (`emit` bridge) → normalizer →
 
 - Claude Code hooks payloads: `PreToolUse` = tool_name/tool_input/tool_use_id; `PostToolUse` adds tool_response/duration_ms; hook input includes `transcript_path` — use it per-session, never glob `~/.claude/projects/*.jsonl`
 - Transcript JSONL internal schema is NOT a stable contract — transcript adapter is best-effort, versioned, feature-flagged; hook stdin JSON is the canonical record
-- `agent-witness init` edits `~/.claude/settings.json` — must be idempotent, merge-safe, and keep a backup
+- `agent-witness init` edits `~/.claude/settings.json` AND installs `~/.claude/skills/witness/SKILL.md` — both must be idempotent, merge-safe, and keep a backup; the skill file is marker-owned and a foreign file at its path is never touched
 - Fixtures must be sanitized (no real paths/secrets from recorded sessions)
 - Naming: crates.io `agent-witness` / `agent-witness-core`; note cursor/agent-trace is an export-format interop target, not a competitor
 

@@ -4,12 +4,15 @@
 //! integration-testable (see `tests/`). The core event model, normalizer, and
 //! store live in `agent-witness-core`.
 
+mod backup;
+
 pub mod emit;
 pub mod init;
 pub mod ls;
 pub mod paths;
 pub mod pick;
 pub mod report;
+pub mod skill;
 pub mod timefmt;
 pub mod timeline;
 pub mod top;
