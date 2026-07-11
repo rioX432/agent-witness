@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `top` / `show` no longer panic (with a leaked alternate-screen escape) when stdout is not a TTY — pipes, CI, and editor-embedded shells now get a one-line error pointing at the non-interactive equivalent (`ls --live` / `report`) (#40)
+
 ## [0.0.4] - 2026-07-11
 
 Consumption-surface release: the record now reaches you where you already are

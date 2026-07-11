@@ -221,6 +221,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Show(args) => {
+            require_tty("show", "agent-witness report")?;
             let paths = paths::resolve()?;
             let store = SessionStore::new(&paths.sessions_root);
             // Resolve which session to open before touching the terminal, so
@@ -261,6 +262,7 @@ async fn main() -> Result<()> {
             print!("{rendered}");
         }
         Command::Top(args) => {
+            require_tty("top", "agent-witness ls --live")?;
             let paths = paths::resolve()?;
             let store = SessionStore::new(&paths.sessions_root);
             let window_ms = window_ms(args.window);
@@ -272,6 +274,23 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Refuse to start a fullscreen TUI without an interactive terminal.
+///
+/// ratatui's terminal init panics on ENXIO ("Device not configured") when
+/// stdout is not a TTY (pipes, CI, editor-embedded shells). A predictable
+/// environment condition deserves a one-line actionable error, not a panic
+/// with a leaked alternate-screen escape (issue #40).
+fn require_tty(command: &str, fallback: &str) -> Result<()> {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "`agent-witness {command}` needs an interactive terminal (stdout is not a TTY). \
+         For non-interactive output, use `{fallback}`."
+    )
 }
 
 /// Convert a `--window` value in seconds to the milliseconds the liveness rule
