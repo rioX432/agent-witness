@@ -54,6 +54,8 @@ user-invocable: true
 allowed-tools:
   - Bash(agent-witness report:*)
   - Bash(agent-witness ls:*)
+  - Bash(agent-witness digest:*)
+  - Bash(agent-witness inventory:*)
 ---
 
 <!-- managed by agent-witness init; re-running `agent-witness init` may overwrite
@@ -79,6 +81,25 @@ output — never from memory of the conversation.
    commands executed. Keep each event's attribution (`direct | observed |
    inferred`) visible when it matters — never present an `inferred` event as an
    observed fact.
+
+## Usage audit
+
+When asked to audit AI usage — wasteful loops, model choices, per-project
+delegation — aggregate the record instead of quoting a single session:
+
+1. Run `agent-witness digest` (`--week`, `--today`, or `--since <dur>`; add
+   `--json` to aggregate) for a cross-session, per-project ledger: sessions,
+   durations, tool calls, commands, destructive-class command-flag counts, and
+   per-model token totals.
+2. Run `agent-witness inventory` for the capability surface — which configured
+   MCP servers and skills were actually used versus merely configured.
+3. Summarize HONESTLY. The CLI gives FACTS ONLY; any "wasteful", "oversized", or
+   "risky" characterization is YOUR interpretation — say so, and never present it
+   as a CLI claim. A missing usage sidecar means "usage unavailable", not zero
+   tokens.
+
+For an unattended, scheduled weekly version of this audit, see
+`docs/recipes/scheduled-audit.md`.
 
 ## Trust boundary
 
@@ -273,6 +294,22 @@ mod tests {
         assert!(SKILL_CONTENT.contains(OWN_MARKER));
         assert!(SKILL_CONTENT.contains("Trust boundary"));
         assert!(SKILL_CONTENT.contains("not the trusted read path"));
+    }
+
+    #[test]
+    fn content_has_usage_audit_section_and_allows_audit_commands() {
+        // The audit flow (issue #49) must be present, and the two aggregation
+        // commands it drives must be pre-authorized in the frontmatter — while
+        // the original report/ls grants stay intact.
+        assert!(SKILL_CONTENT.contains("## Usage audit"));
+        assert!(SKILL_CONTENT.contains("Bash(agent-witness report:*)"));
+        assert!(SKILL_CONTENT.contains("Bash(agent-witness ls:*)"));
+        assert!(SKILL_CONTENT.contains("Bash(agent-witness digest:*)"));
+        assert!(SKILL_CONTENT.contains("Bash(agent-witness inventory:*)"));
+        // The facts-vs-judgment boundary must be explicit, not implied: the CLI
+        // gives facts, the characterization is the agent's own.
+        assert!(SKILL_CONTENT.contains("FACTS ONLY"));
+        assert!(SKILL_CONTENT.contains("usage unavailable"));
     }
 
     #[test]
