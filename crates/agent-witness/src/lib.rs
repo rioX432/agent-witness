@@ -7,6 +7,7 @@
 mod backup;
 
 pub mod emit;
+pub mod flags;
 pub mod init;
 pub mod ls;
 pub mod paths;

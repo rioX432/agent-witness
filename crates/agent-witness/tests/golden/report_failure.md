@@ -38,4 +38,5 @@ _From Bash `tool_input.command`._
 agent-witness records only what Claude Code hooks report: tool calls and their inputs, not their side effects.
 A command run via Bash is recorded by its command line only; what it does internally (e.g. `bash script.sh`) is not observed.
 A failed Bash call fires no completion hook, so it appears as a call with no result — never as a success.
+Flagged commands, when present, describe the command class only — never intent, outcome, or whether any damage occurred.
 0 corrupt/unreadable line(s) were skipped while reading this session.

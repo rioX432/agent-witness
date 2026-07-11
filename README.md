@@ -128,6 +128,32 @@ A best-effort transcript adapter fills in what hooks never surface (assistant
 prose between tool calls) as `observed`-attribution events — disable with
 `--no-transcript` for a hooks-only canonical record. Details: [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Flagged commands
+
+`report` surfaces a **Flagged commands** section for recorded shell commands
+whose *class* is destructive — `rm -rf` on a home/root path, `git push --force`,
+`git clean -fd`, `git reset --hard`, `chmod -R 777`, `dd of=/dev/…`, `mkfs` on a
+device, and `curl … | sh`. Each flag carries a severity (`critical` / `warning`)
+and a one-line description of the command class.
+
+**What a flag is — and is not.** A flag says *this command's class is
+destructive*. It makes **no claim** about intent, maliciousness, outcome, or
+whether any damage occurred. Read it as "worth a second look", not "this did
+harm".
+
+**Coverage gap (documented, not papered over).** Matching is a best-effort,
+token-based check over the recorded command text, so it is deliberately narrow
+and evadable:
+
+- It is **blind to side effects inside a script** — `Bash("deploy.sh")` is
+  recorded by its command line only; what runs *inside* it is never observed.
+- Only the **catastrophic `rm -rf` home/root form** is flagged (`~/`, `/`,
+  `$HOME`, …). Scoped or relative deletes like `rm -rf ./node_modules` or
+  `rm -rf ~/project/build` are intentionally **not** flagged, to keep false
+  positives near zero.
+- Quoting, heredocs, aliases, and obfuscation can evade it. This is not a
+  security boundary and makes no "we catch everything" claim (see SECURITY.md).
+
 ## Install
 
 ```bash

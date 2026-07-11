@@ -22,6 +22,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::flags::{flags_for_command, Flag};
 use crate::timefmt::{format_duration_ms, format_offset_ms, format_utc};
 use crate::timeline::{build_timeline, tool_call_count, TimelineEntry};
 
@@ -48,6 +49,10 @@ pub struct SessionReport {
     pub session_id: String,
     /// Headline counts and timing.
     pub summary: Summary,
+    /// Destructive-class command flags, critical-first (an incident reviewer
+    /// should see these before anything else). Class-only, never intent — see
+    /// [`crate::flags`]. Empty when nothing matched.
+    pub flags: Vec<Flag>,
     /// Distinct files named by tool `file_path` inputs, in first-seen order.
     pub touched_files: Vec<TouchedFile>,
     /// Shell commands observed via Bash `tool_input.command`, in order.
@@ -142,6 +147,7 @@ pub fn build_report(
 
     let touched_files = collect_touched_files(&entries);
     let commands = collect_commands(&entries);
+    let flags = collect_flags(&commands);
     let timeline = collect_timeline(&entries, base_ts);
 
     let summary = Summary {
@@ -159,6 +165,7 @@ pub fn build_report(
     SessionReport {
         session_id: session_id.to_string(),
         summary,
+        flags,
         touched_files,
         commands,
         timeline,
@@ -206,6 +213,19 @@ fn collect_commands(entries: &[TimelineEntry]) -> Vec<CommandRun> {
         .collect()
 }
 
+/// Destructive-class flags over the recorded commands, ordered critical-first
+/// then by original command order. Class-only (never intent/outcome) — the
+/// matcher and its honesty contract live in [`crate::flags`].
+fn collect_flags(commands: &[CommandRun]) -> Vec<Flag> {
+    let mut flags: Vec<Flag> = commands
+        .iter()
+        .flat_map(|cmd| flags_for_command(&cmd.command))
+        .collect();
+    // Stable sort by severity keeps original command order within a severity.
+    flags.sort_by_key(|flag| flag.severity.rank());
+    flags
+}
+
 /// One condensed digest row per timeline entry.
 fn collect_timeline(entries: &[TimelineEntry], base_ts: i64) -> Vec<TimelineDigestEntry> {
     entries
@@ -244,6 +264,9 @@ fn disclaimer_lines(corrupt_lines: usize) -> Vec<String> {
             .to_string(),
         "A failed Bash call fires no completion hook, so it appears as a call \
          with no result — never as a success."
+            .to_string(),
+        "Flagged commands, when present, describe the command class only — never \
+         intent, outcome, or whether any damage occurred."
             .to_string(),
         format!(
             "{corrupt_lines} corrupt/unreadable line(s) were skipped while reading this session."
@@ -317,6 +340,7 @@ fn render_markdown(report: &SessionReport) -> String {
     push_line(&mut out, "");
 
     render_summary(&mut out, &report.summary);
+    render_flags(&mut out, &report.flags);
     render_touched_files(&mut out, &report.touched_files);
     render_commands(&mut out, &report.commands);
     render_timeline(&mut out, &report.timeline);
@@ -343,6 +367,38 @@ fn render_summary(out: &mut String, summary: &Summary) {
     push_line(out, &format!("- Commands: {}", summary.commands));
     push_line(out, &format!("- Events: {}", summary.events));
     push_line(out, &format!("- Corrupt lines: {}", summary.corrupt_lines));
+    push_line(out, "");
+}
+
+/// Render the destructive-class flags section. Only emitted when at least one
+/// flag matched, and prominently placed (right after the summary) so an incident
+/// reviewer sees it first. The caveat line keeps the honesty framing explicit:
+/// class-only, no intent/outcome claim, blind to side effects inside scripts.
+fn render_flags(out: &mut String, flags: &[Flag]) {
+    if flags.is_empty() {
+        return;
+    }
+    push_line(out, "## Flagged commands");
+    push_line(out, "");
+    push_line(
+        out,
+        "_Flags the command **class** as destructive — no claim about intent, \
+         outcome, or whether any damage occurred. Best-effort match on the \
+         recorded command text; side effects inside a script (e.g. \
+         `bash script.sh`) are not observed._",
+    );
+    push_line(out, "");
+    for flag in flags {
+        push_line(
+            out,
+            &format!(
+                "- **[{}]** {} — `{}`",
+                flag.severity.label(),
+                flag.rationale,
+                flag.command,
+            ),
+        );
+    }
     push_line(out, "");
 }
 
@@ -592,6 +648,52 @@ mod tests {
         assert_eq!(parsed["summary"]["commands"], json!(1));
         assert_eq!(parsed["commands"][0]["status"], json!("no-result"));
         assert!(parsed["disclaimer"].is_array());
+    }
+
+    #[test]
+    fn destructive_command_surfaces_a_flag_ordered_critical_first() {
+        // Arrange: a warning-class command runs before a critical-class one.
+        let events = vec![
+            ev(
+                1,
+                EventKind::ToolCall,
+                json!({"tool_name": "Bash", "tool_use_id": "t1",
+                       "tool_input": {"command": "git push --force origin main"}}),
+            ),
+            ev(
+                2,
+                EventKind::ToolCall,
+                json!({"tool_name": "Bash", "tool_use_id": "t2",
+                       "tool_input": {"command": "rm -rf ~/"}}),
+            ),
+        ];
+        // Act
+        let report = build_report("s", &read_with(events, 0), None);
+        // Assert: critical (rm) sorts before warning (git push) despite run order.
+        assert_eq!(report.flags.len(), 2);
+        assert_eq!(report.flags[0].pattern, "rm-rf-home-root");
+        assert_eq!(report.flags[0].command, "rm -rf ~/");
+        assert_eq!(report.flags[1].pattern, "git-force-push");
+
+        let md = MarkdownExporter.export(&report).unwrap();
+        assert!(md.contains("## Flagged commands"));
+        assert!(md.contains("recursive force-remove targeting a home or root path"));
+        // Honesty caveat is present in the section.
+        assert!(md.contains("no claim about intent"));
+    }
+
+    #[test]
+    fn clean_session_omits_the_flagged_section_and_flags_are_empty() {
+        let events = vec![ev(
+            1,
+            EventKind::ToolCall,
+            json!({"tool_name": "Bash", "tool_use_id": "t1",
+                   "tool_input": {"command": "rm -rf ./node_modules"}}),
+        )];
+        let report = build_report("s", &read_with(events, 0), None);
+        assert!(report.flags.is_empty());
+        let md = MarkdownExporter.export(&report).unwrap();
+        assert!(!md.contains("## Flagged commands"));
     }
 
     #[test]
