@@ -28,6 +28,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::terminal::init as init_terminal;
 use crate::timefmt::format_duration_ms;
 use crate::timeline::{build_timeline, ToolStatus};
 use crate::tui;
@@ -319,7 +320,7 @@ pub fn run_top(store: &SessionStore, clock: &dyn Clock, window_ms: i64) -> Resul
 
 /// Run one resident `top` screen until the user drills in or quits.
 fn run_top_screen(store: &SessionStore, clock: &dyn Clock, window_ms: i64) -> Result<TopOutcome> {
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal("top", "agent-witness ls --live")?;
     let result = run_top_loop(&mut terminal, store, clock, window_ms);
     ratatui::restore();
     result

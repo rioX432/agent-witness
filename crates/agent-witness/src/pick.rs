@@ -17,6 +17,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::terminal::init as init_terminal;
 use crate::timefmt::format_utc;
 
 /// Header block height (1 content line + top/bottom border).
@@ -200,7 +201,7 @@ fn render_footer(frame: &mut Frame, area: Rect) {
 /// user quit without choosing. Owns the terminal lifecycle.
 pub fn run_pick(rows: Vec<PickRow>) -> Result<Option<String>> {
     let mut app = PickApp::new(rows);
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal("show", "agent-witness report")?;
     let result = run_loop(&mut terminal, &mut app);
     ratatui::restore();
     result.map(|()| app.chosen)
