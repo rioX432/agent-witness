@@ -86,8 +86,8 @@ async fn forward(socket: &Path, payload: &str) -> std::io::Result<()> {
 
 /// Write the payload directly to the store (no daemon). Uses the wall clock at
 /// the edge; the normalizer it drives stays clock-free. After the canonical hook
-/// record lands, best-effort transcript ingest runs (on `Stop`); its failures
-/// are isolated and never fail this hook.
+/// record lands, best-effort transcript ingest runs (on `Stop` /
+/// `SessionEnd`); its failures are isolated and never fail this hook.
 fn fallback(sessions_root: &Path, payload: &str, transcript_enabled: bool) -> Result<()> {
     let mut receiver = Receiver::new(SessionStore::new(sessions_root));
     receiver.ingest(payload, &SystemClock)?;

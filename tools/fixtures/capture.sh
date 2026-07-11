@@ -2,7 +2,7 @@
 # capture.sh — record a real Claude Code session's hook payloads to a JSONL dump.
 #
 # It temporarily points the hooks (SessionStart / UserPromptSubmit / PreToolUse /
-# PostToolUse / Stop) at a file-append command, so each hook's stdin JSON is
+# PostToolUse / Stop / SessionEnd) at a file-append command, so each hook's stdin JSON is
 # written verbatim — one compact JSON per line. The dump is raw and UNSANITIZED;
 # feed it to sanitize.py before committing anything under tests/fixtures/.
 #
@@ -52,7 +52,8 @@ jq -n --arg cmd "$append_cmd" '
      UserPromptSubmit: no_matcher,
      PreToolUse:       with_matcher,
      PostToolUse:      with_matcher,
-     Stop:             no_matcher
+     Stop:             no_matcher,
+     SessionEnd:       no_matcher
   }}' > "$settings"
 
 # `--settings` ADDS to (does not replace) the user's global settings, so any

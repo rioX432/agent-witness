@@ -14,7 +14,7 @@
 //! [`DEFAULT_LIVE_WINDOW_MS`]. Honesty (ADR-0002): liveness is inferred, never
 //! proven.
 
-use crate::event::{AgentEvent, EventKind};
+use crate::event::{AgentEvent, EventKind, Source};
 use crate::liveness::{self, LivenessInputs, DEFAULT_LIVE_WINDOW_MS};
 use crate::store::{SessionStore, StoreError};
 
@@ -54,11 +54,17 @@ pub struct SessionSummary {
     /// pre-#26 configs never emit one), but it still records honestly whether we
     /// saw the session's own start.
     pub has_start: bool,
-    /// Whether the **last** observed event is a `Stop`, i.e. the session is
-    /// currently between turns (used by the liveness rule). `Stop` is per-turn,
-    /// not terminal, so this tracks the last event's kind — not whether any
-    /// `Stop` was ever seen (issue #23).
+    /// Whether the last **hook-observed** event is a `Stop`, i.e. the session
+    /// is currently between turns (used by the liveness rule). `Stop` is
+    /// per-turn, not terminal, so this tracks the last hook event's kind — not
+    /// whether any `Stop` was ever seen (issue #23). Transcript-sourced
+    /// supplements are ignored here: they are ingested right after the hook
+    /// record that triggered them and must not mask it.
     pub last_is_stop: bool,
+    /// Whether the last **hook-observed** event is a `SessionEnd`: termination
+    /// was directly observed (issue #31). A resumed session appends hook
+    /// events after its `SessionEnd` and reads live again.
+    pub last_is_session_end: bool,
     /// Total parsed events.
     pub event_count: usize,
     /// Number of tool invocations (`ToolCall` events).
@@ -81,6 +87,7 @@ impl SessionSummary {
     pub fn liveness_inputs(&self) -> LivenessInputs {
         LivenessInputs {
             last_is_stop: self.last_is_stop,
+            last_is_session_end: self.last_is_session_end,
             last_event_ts: self.last_event_ts,
         }
     }
@@ -159,9 +166,19 @@ pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> Se
             _ => {}
         }
     }
-    // `Stop` is per-turn, not terminal (issue #23): only the last event's kind
-    // tells us whether the session is between turns.
-    let last_is_stop = events.last().is_some_and(|e| e.kind == EventKind::Stop);
+    // `Stop` is per-turn, not terminal (issue #23); `SessionEnd` is terminal
+    // but a resumed session appends events after it (issue #31). Both key on
+    // the last HOOK-observed event: transcript supplements are ingested right
+    // after the `Stop`/`SessionEnd` record that triggered them, so keying on
+    // the raw last line would let an `observed` transcript event mask a
+    // directly observed turn end / session end.
+    let last_hook_kind = events
+        .iter()
+        .rev()
+        .find(|e| e.source == Source::Hooks)
+        .map(|e| e.kind);
+    let last_is_stop = last_hook_kind == Some(EventKind::Stop);
+    let last_is_session_end = last_hook_kind == Some(EventKind::SessionEnd);
     SessionSummary {
         id: id.to_string(),
         created_ts,
@@ -170,6 +187,7 @@ pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> Se
         cwds,
         has_start,
         last_is_stop,
+        last_is_session_end,
         event_count: events.len(),
         tool_calls,
     }
@@ -451,6 +469,55 @@ mod tests {
         assert_eq!(s.last_event_ts, Some(4));
         assert_eq!(s.recency_ms(), 4);
         assert_eq!(s.started_ms(), Some(0));
+    }
+
+    #[test]
+    fn summarize_keys_end_state_on_last_hook_event_not_transcript_supplements() {
+        // Transcript ingest runs right after the Stop/SessionEnd record lands
+        // (emit/watch), appending observed events after it in file order. Those
+        // supplements must not mask the directly observed end state.
+        let mut end = event(4, EventKind::SessionEnd, Some("/a/proj"));
+        end.payload = json!({ "reason": "logout" });
+        let transcript_supplement = AgentEvent::new(
+            3,
+            "s",
+            Source::Transcript,
+            EventKind::Prompt,
+            Attribution::Observed,
+            CONFIDENCE_CERTAIN,
+            json!({ "text": "assistant prose" }),
+        );
+        let events = vec![
+            event(1, EventKind::ToolCall, Some("/a/proj")),
+            end,
+            transcript_supplement,
+        ];
+        let s = summarize("sess", Some(0), &events);
+        assert!(
+            s.last_is_session_end,
+            "a trailing transcript event must not mask SessionEnd"
+        );
+        assert!(!s.last_is_stop);
+
+        // Same masking rule for the per-turn Stop.
+        let events = vec![
+            event(1, EventKind::ToolCall, Some("/a/proj")),
+            event(4, EventKind::Stop, Some("/a/proj")),
+            AgentEvent::new(
+                3,
+                "s",
+                Source::Transcript,
+                EventKind::Prompt,
+                Attribution::Observed,
+                CONFIDENCE_CERTAIN,
+                json!({ "text": "assistant prose" }),
+            ),
+        ];
+        let s = summarize("sess", Some(0), &events);
+        assert!(
+            s.last_is_stop,
+            "a trailing transcript event must not mask Stop"
+        );
     }
 
     #[test]

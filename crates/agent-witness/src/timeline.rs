@@ -175,6 +175,7 @@ fn meta_tag(kind: EventKind) -> String {
         EventKind::SessionStart => "SESSION",
         EventKind::Prompt => "PROMPT",
         EventKind::Stop => "STOP",
+        EventKind::SessionEnd => "END",
         EventKind::Error => "ERROR",
         // Tool kinds are handled before this is reached.
         EventKind::ToolCall | EventKind::ToolResult | EventKind::ToolFailure => "TOOL",
@@ -208,6 +209,7 @@ fn meta_summary(ev: &AgentEvent) -> String {
         EventKind::SessionStart => "source",
         EventKind::Prompt => "prompt",
         EventKind::Stop => "last_assistant_message",
+        EventKind::SessionEnd => "reason",
         EventKind::Error => "error",
         _ => return String::new(),
     };

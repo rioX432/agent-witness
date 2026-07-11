@@ -15,16 +15,24 @@
 //! event we assume must have happened.
 //!
 //! Stop is per-turn, not per-session (issue #23): Claude Code's `Stop` hook
-//! fires at the end of **every** assistant turn, not at session end. There is no
-//! `SessionEnd` hook. So a live interactive session accumulates many `Stop`
-//! events with more events after each one; treating "any observed `Stop`" as
-//! terminal (the pre-#23 rule) made every interactive session read idle after
-//! its first turn. The verdict therefore keys on whether the *last* event is a
-//! `Stop` (between turns → idle) rather than on whether one was ever seen:
+//! fires at the end of **every** assistant turn, not at session end. So a live
+//! interactive session accumulates many `Stop` events with more events after
+//! each one; treating "any observed `Stop`" as terminal (the pre-#23 rule) made
+//! every interactive session read idle after its first turn. The verdict
+//! therefore keys on whether the *last* event is a `Stop` (between turns →
+//! idle) rather than on whether one was ever seen:
 //! - last event is not `Stop`, within window → **live** (mid-turn)
 //! - last event is `Stop` → **idle** (between turns; a later event returns it to
 //!   live)
 //! - last event beyond the window → **idle/stale** (as before)
+//!
+//! SessionEnd is directly observed (issue #31): with the `SessionEnd` hook
+//! registered, real session termination is recorded rather than inferred. A
+//! last event that is a `SessionEnd` reads idle immediately — no recency-window
+//! wait — because we *saw* the session end. Like `Stop`, the check is on the
+//! last event only: a resumed session appends new events after its
+//! `SessionEnd` and correctly returns to live. Sessions that crash without a
+//! `SessionEnd` still fall back to the window inference above, honestly.
 //!
 //! Determinism (a Core Value): the window is configurable (default
 //! [`DEFAULT_LIVE_WINDOW_MS`]) and "now" is injected, never read from the
@@ -48,6 +56,10 @@ pub struct LivenessInputs {
     /// between turns). Not "a `Stop` was ever seen": `Stop` fires per turn, so a
     /// live session has many, each followed by more events (issue #23).
     pub last_is_stop: bool,
+    /// The session's **last** observed event is a `SessionEnd`: termination was
+    /// directly observed, so the session is idle with no window wait. Last-event
+    /// only, because a resumed session appends events afterwards (issue #31).
+    pub last_is_session_end: bool,
     /// Time of the last observed event, if any. `None` means no events were
     /// observed at all, which reads as not live (nothing to be recent).
     pub last_event_ts: Option<i64>,
@@ -60,7 +72,7 @@ pub struct LivenessInputs {
 /// Does not require an observed `SessionStart` (issue #26): any observed event
 /// implies the session started, so an unstopped, recent last event is enough.
 pub fn is_live(inputs: LivenessInputs, now_ms: i64, window_ms: i64) -> bool {
-    if inputs.last_is_stop {
+    if inputs.last_is_stop || inputs.last_is_session_end {
         return false;
     }
     match inputs.last_event_ts {
@@ -78,6 +90,15 @@ mod tests {
     fn inputs(last_is_stop: bool, last: Option<i64>) -> LivenessInputs {
         LivenessInputs {
             last_is_stop,
+            last_is_session_end: false,
+            last_event_ts: last,
+        }
+    }
+
+    fn ended_inputs(last: Option<i64>) -> LivenessInputs {
+        LivenessInputs {
+            last_is_stop: false,
+            last_is_session_end: true,
             last_event_ts: last,
         }
     }
@@ -142,6 +163,24 @@ mod tests {
         assert!(!is_live(i, NOW, 5_000));
         // 30s window: the same activity is live.
         assert!(is_live(i, NOW, 30_000));
+    }
+
+    #[test]
+    fn session_end_is_idle_immediately_even_within_window() {
+        // Issue #31: a directly observed SessionEnd needs no recency-window
+        // wait — the session ended one millisecond ago and is already idle.
+        let i = ended_inputs(Some(NOW - 1));
+        assert!(!is_live(i, NOW, DEFAULT_LIVE_WINDOW_MS));
+    }
+
+    #[test]
+    fn new_event_after_session_end_returns_to_live() {
+        // A resumed session appends events after its SessionEnd; the last event
+        // is then no longer a SessionEnd, so the session reads live again.
+        let ended = ended_inputs(Some(NOW - 1_000));
+        assert!(!is_live(ended, NOW, DEFAULT_LIVE_WINDOW_MS));
+        let resumed = inputs(false, Some(NOW - 1_000));
+        assert!(is_live(resumed, NOW, DEFAULT_LIVE_WINDOW_MS));
     }
 
     #[test]

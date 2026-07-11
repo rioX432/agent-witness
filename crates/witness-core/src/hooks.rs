@@ -31,6 +31,10 @@ const HOOK_POST_TOOL_USE_FAILURE: &str = "PostToolUseFailure";
 /// `hook_event_name` marking the end of a turn. Public so the transcript bridge
 /// can trigger a supplementary transcript read once the session is complete.
 pub const HOOK_STOP: &str = "Stop";
+/// `hook_event_name` marking real session termination (fires once, with a
+/// `reason`, unlike the per-turn `Stop`). Public for the same transcript-bridge
+/// trigger as [`HOOK_STOP`].
+pub const HOOK_SESSION_END: &str = "SessionEnd";
 
 /// Why a payload could not be normalized. The receiver turns these into an
 /// [`EventKind::Error`] event rather than dropping the input.
@@ -122,6 +126,7 @@ pub fn normalize(hook: &Value, ts: i64, raw_ref: &str) -> Result<AgentEvent, Nor
             EventKind::Stop,
             project(obj, &["last_assistant_message", "stop_hook_active"]),
         ),
+        HOOK_SESSION_END => (EventKind::SessionEnd, project(obj, &["reason", "cwd"])),
         other => return Err(NormalizeError::UnmappedHookEvent(other.to_string())),
     };
 
@@ -233,6 +238,10 @@ mod tests {
             (
                 r#"{"hook_event_name":"PostToolUseFailure","session_id":"s","tool_use_id":"t"}"#,
                 EventKind::ToolFailure,
+            ),
+            (
+                r#"{"hook_event_name":"SessionEnd","session_id":"s","reason":"logout"}"#,
+                EventKind::SessionEnd,
             ),
         ];
         for (line, expected) in cases {
