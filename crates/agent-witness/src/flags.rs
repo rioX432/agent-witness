@@ -626,6 +626,22 @@ mod tests {
     }
 
     #[test]
+    fn newline_and_semicolon_separators_anchor_each_segment() {
+        // A newline (and `;`) splits segments, so the destructive one anchors on
+        // its own leading token rather than the harmless first command.
+        assert_single(
+            "echo hi\nrm -rf ~/",
+            PATTERN_RM_RF_HOME_ROOT,
+            FlagSeverity::Critical,
+        );
+        assert_single(
+            "cd /tmp; rm -rf /",
+            PATTERN_RM_RF_HOME_ROOT,
+            FlagSeverity::Critical,
+        );
+    }
+
+    #[test]
     fn severity_serializes_snake_case() {
         assert_eq!(
             serde_json::to_string(&FlagSeverity::Critical).unwrap(),
