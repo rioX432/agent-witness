@@ -154,6 +154,53 @@ and evadable:
 - Quoting, heredocs, aliases, and obfuscation can evade it. This is not a
   security boundary and makes no "we catch everything" claim (see SECURITY.md).
 
+## Capability inventory: configured vs used
+
+`inventory` accounts for your agent's **attack surface**: what MCP servers and
+skills are *configured and reachable* versus what your sessions *actually
+invoked*, plus the diff.
+
+```bash
+agent-witness inventory              # markdown, over all recorded history
+agent-witness inventory --since 30d  # only count usage in the last 30 days
+agent-witness inventory --json       # same data, machine-readable
+```
+
+It reads three configured MCP sources, source-tagged so you can see exactly
+where a capability comes from:
+
+1. `~/.claude.json` → `.mcpServers` (user-global)
+2. `~/.claude.json` → `.projects[<cwd>].mcpServers` (per-project, this directory)
+3. `<cwd>/.mcp.json` → `.mcpServers` (checked-in project file)
+
+Configured skills are the immediate subdirectories containing a `SKILL.md` under
+`~/.claude/skills/` (user) and `<cwd>/.claude/skills/` (project). The **used**
+side aggregates `mcp__<server>__<tool>` and `Skill` tool calls from the recorded
+store, with a per-item call count and last-used time.
+
+**Honest time base — the two sides are never conflated.** *Configured* is a
+snapshot read from your config files **at the moment you run the command**;
+*used* is observed `ToolCall` evidence over a window (`[since, now]`, or all
+recorded history without `--since`). The output states both explicitly. The diff
+labels stay factual — "configured now, not observed used in `<window>`" and
+"observed used in `<window>`, not configured now" — never a bare "unused". Each
+configured source carries a read status (`read` / `missing` / `unreadable` /
+`parse failed`), and the report is flagged `partial` if any source could not be
+read, so an unreadable config never silently looks like "nothing configured".
+
+**Gaps (documented, not papered over).**
+
+- **MCP config values are never read** — only server *names* (the object keys).
+  `~/.claude.json` holds env vars and tokens in the server values; those are
+  never read, retained, serialized, or printed.
+- **Plugin-provided skills** (via `enabledPlugins`) are not enumerated.
+- **Used-but-not-configured is a neutral fact, not "misconfigured".** Dynamic /
+  UUID-named or claude.ai-connected servers, and servers whose config was since
+  removed, legitimately show up as observed-used without a current config entry.
+- Nothing here is written to the store: `inventory` reads config files
+  ephemerally and computes the report — configured state is never recorded as a
+  session event.
+
 ## Install
 
 ```bash
