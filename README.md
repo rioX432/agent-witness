@@ -201,6 +201,53 @@ read, so an unreadable config never silently looks like "nothing configured".
   ephemerally and computes the report — configured state is never recorded as a
   session event.
 
+## Your AI delegation ledger: `digest`
+
+`digest` answers a question the raw record can't at a glance — *what did I delegate
+to my agents today / this week, per project?* It aggregates **every recorded
+session** in a time window, groups them by project (cwd), and prints one
+shareable markdown (or `--json`) ledger.
+
+```bash
+agent-witness digest              # all recorded history
+agent-witness digest --today      # sessions started in the current UTC calendar day
+agent-witness digest --week       # last 7 UTC calendar days, including today
+agent-witness digest --since 72h  # relative look-back (s/m/h/d/w)
+agent-witness digest --json       # same data, machine-readable
+```
+
+Each project section reports session count and summed duration, user prompts,
+tool calls, distinct files touched, Bash commands, destructive-class command-flag
+counts by severity, and per-model token totals. The window flags are mutually
+exclusive; the header states the exact bounds (e.g. `UTC today, 2026-07-11
+00:00:00Z to 2026-07-11 14:32:10Z`).
+
+**Facts only — judgments live elsewhere (deliberately).** The digest reports
+counts, durations, and token totals and makes **no** claim about efficiency,
+model choice, or command safety. Command-flag counts are pattern-matcher hits,
+not verdicts (see [Flagged commands](#flagged-commands)). This boundary is
+intentional: waste/oversized-model judgments belong to a future scheduled-audit
+agent layer, never the CLI (see NON-GOALS.md).
+
+**Honest time base and honest gaps.**
+
+- **UTC calendar windows, not local time.** `--today` / `--week` use UTC day
+  boundaries to match the rest of the tool's UTC-only time display, so the same
+  command is deterministic regardless of where you run it.
+- **Included by session start, whole totals counted.** A session is included when
+  its *start* falls inside the window; its entire totals are then counted. Usage
+  sidecars are per-session and cannot be sliced to a sub-window, so a long
+  session that merely *touched* the window is not partially attributed.
+- **Usage unavailable is not zero.** A session with no `usage.json` sidecar is
+  counted as "usage unavailable" and contributes **zero** to token totals — a
+  state kept distinct from a session that genuinely used zero tokens.
+- **User prompts only.** The prompt count includes only hook-sourced prompts; the
+  transcript adapter's `Prompt` events (assistant prose) are excluded.
+- **Attribution is disclosed.** A session is grouped by its **first** observed
+  cwd; sessions that span several directories are counted in `multi_cwd_sessions`
+  (never silently attributed), a session with no observed cwd lands in the
+  `unknown project` bucket, and skipped corrupt lines are surfaced.
+
 ## Install
 
 ```bash

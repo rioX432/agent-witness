@@ -10,7 +10,7 @@ use agent_witness::init::{self, InitOutcome, InitReport};
 use agent_witness::report::{self, JsonExporter, MarkdownExporter, SessionExporter};
 use agent_witness::skill::{self, SkillOutcome, SkillReport};
 use agent_witness::statusline::{self, StatuslineOutcome, StatuslineReport};
-use agent_witness::{emit, inventory, ls, paths, pick, top, tui, watch};
+use agent_witness::{digest, emit, inventory, ls, paths, pick, top, tui, watch};
 use agent_witness_core::{
     collect_summaries, resolve, Clock, SessionStore, SystemClock, DEFAULT_LIVE_WINDOW_MS,
 };
@@ -57,6 +57,10 @@ enum Command {
     /// — an attack-surface / capability accounting (configured now vs observed
     /// used over a window). Reads config files ephemerally; nothing is recorded.
     Inventory(InventoryArgs),
+    /// Cross-session delegation ledger: aggregate every recorded session in a
+    /// time window, grouped by project, into a factual summary (sessions,
+    /// prompts, tool calls, files, commands, flags, tokens). Facts only.
+    Digest(DigestArgs),
     /// Claude Code statusLine command: read the statusline JSON on stdin and
     /// print a one-line recording segment for the current session (install it
     /// with `init --statusline`).
@@ -101,6 +105,27 @@ struct InventoryArgs {
     /// Only count observed use at or after this relative time (e.g. `30d`,
     /// `7d`, `24h`). Filters the used side only — configured is always read
     /// as-of-now. Omit for all recorded history.
+    #[arg(long, value_name = "WHEN")]
+    since: Option<String>,
+    /// Emit machine-readable JSON instead of markdown (same data).
+    #[arg(long)]
+    json: bool,
+}
+
+/// Arguments for `agent-witness digest`. The three window selectors are mutually
+/// exclusive; omit all three to aggregate all recorded history.
+#[derive(Debug, Args)]
+struct DigestArgs {
+    /// Only include sessions started in the current UTC calendar day, not local
+    /// time.
+    #[arg(long)]
+    today: bool,
+    /// Only include sessions started in the last 7 UTC calendar days including
+    /// today.
+    #[arg(long)]
+    week: bool,
+    /// Only include sessions started at or after this relative time (e.g. `30d`,
+    /// `7d`, `24h`). Omit all window flags for all recorded history.
     #[arg(long, value_name = "WHEN")]
     since: Option<String>,
     /// Emit machine-readable JSON instead of markdown (same data).
@@ -315,6 +340,24 @@ async fn main() -> Result<()> {
                 inventory::to_json(&report)?
             } else {
                 inventory::to_markdown(&report)
+            };
+            print!("{rendered}");
+        }
+        Command::Digest(args) => {
+            let paths = paths::resolve()?;
+            let store = SessionStore::new(&paths.sessions_root);
+            // Resolve the clock and the window ONCE at the edge; the aggregator
+            // stays a pure function of the injected now_ms + since_ms + mode.
+            let now_ms = SystemClock.now_ms();
+            let mode =
+                digest::window_mode_from_flags(args.today, args.week, args.since.as_deref())?;
+            let since_ms = digest::window_since_ms(mode, now_ms);
+            let inputs = digest::collect_session_inputs(&store)?;
+            let report = digest::build_digest(&inputs, now_ms, since_ms, mode);
+            let rendered = if args.json {
+                digest::to_json(&report)?
+            } else {
+                digest::to_markdown(&report)
             };
             print!("{rendered}");
         }
