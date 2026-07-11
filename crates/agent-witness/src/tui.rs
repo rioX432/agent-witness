@@ -27,6 +27,7 @@ use ratatui::widgets::{Block, List, ListItem, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use serde_json::Value;
 
+use crate::terminal::init as init_terminal;
 use crate::timefmt::{format_duration_ms, format_offset_ms, format_utc};
 use crate::timeline::{build_timeline, tool_call_count, TimelineEntry};
 
@@ -364,7 +365,7 @@ pub fn run_show(store: &SessionStore, session_id: &str, follow: bool) -> Result<
     let mut app = TuiApp::new(session_id, &read);
     app.follow = follow;
 
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal("show", "agent-witness report")?;
     let result = run_loop(&mut terminal, &mut app, store, session_id);
     ratatui::restore();
     result
