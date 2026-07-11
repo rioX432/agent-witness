@@ -56,6 +56,7 @@ crates/
   agent-witness/      # binary: CLI (clap derive) + ratatui TUI
     src/init.rs         # settings.json hooks registration (idempotent, merge-safe, backup)
     src/skill.rs        # /witness skill install (marker-owned file, same contract as init)
+    src/statusline.rs   # statusLine segment + wrap/restore install (init --statusline)
     src/backup.rs       # shared timestamped-backup naming for init + skill
     src/emit.rs         # hook bridge: stdin -> socket, store fallback
     src/watch.rs        # unix socket server daemon
