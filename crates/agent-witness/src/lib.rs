@@ -13,6 +13,7 @@ pub mod paths;
 pub mod pick;
 pub mod report;
 pub mod skill;
+pub mod statusline;
 pub mod timefmt;
 pub mod timeline;
 pub mod top;

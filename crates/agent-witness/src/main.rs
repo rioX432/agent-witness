@@ -9,6 +9,7 @@ use std::sync::Arc;
 use agent_witness::init::{self, InitOutcome, InitReport};
 use agent_witness::report::{self, JsonExporter, MarkdownExporter, SessionExporter};
 use agent_witness::skill::{self, SkillOutcome, SkillReport};
+use agent_witness::statusline::{self, StatuslineOutcome, StatuslineReport};
 use agent_witness::{emit, ls, paths, pick, top, tui, watch};
 use agent_witness_core::{
     collect_summaries, resolve, Clock, SessionStore, SystemClock, DEFAULT_LIVE_WINDOW_MS,
@@ -52,6 +53,20 @@ enum Command {
     /// Resident htop-like view of the sessions running right now; Enter drills
     /// into one's timeline, q quits.
     Top(TopArgs),
+    /// Claude Code statusLine command: read the statusline JSON on stdin and
+    /// print a one-line recording segment for the current session (install it
+    /// with `init --statusline`).
+    Statusline(StatuslineArgs),
+}
+
+/// Arguments for `agent-witness statusline`.
+#[derive(Debug, Args)]
+struct StatuslineArgs {
+    /// Wrapped original statusLine command (versioned envelope), installed by
+    /// `init --statusline` when a statusLine already existed. Not meant to be
+    /// written by hand.
+    #[arg(long = "wrap-v1", value_name = "PAYLOAD")]
+    wrap_v1: Option<String>,
 }
 
 /// Arguments for `agent-witness ls`.
@@ -109,10 +124,15 @@ struct InitArgs {
     /// Edit ./.claude/settings.json instead of ~/.claude/settings.json.
     #[arg(long)]
     project: bool,
-    /// Remove agent-witness hook entries and the /witness skill instead of
-    /// adding them.
+    /// Remove agent-witness hook entries, the /witness skill, and the
+    /// statusline (restoring a wrapped original) instead of adding them.
     #[arg(long)]
     remove: bool,
+    /// Also install the recording statusline (opt-in). An existing statusLine
+    /// command is wrapped, not replaced: it keeps rendering ahead of the
+    /// witness segment and `init --remove` restores it exactly.
+    #[arg(long)]
+    statusline: bool,
 }
 
 /// Flags shared by the recording commands controlling the transcript adapter.
@@ -146,6 +166,21 @@ async fn main() -> Result<()> {
                     )
                 })?;
             report_skill(&skill_path, &skill_report);
+            // Statusline is opt-in on install; on remove it always runs so a
+            // wrapped original is restored without remembering the flag.
+            if args.statusline || args.remove {
+                let sl_report =
+                    statusline::run_statusline_install(&path, args.remove, &SystemClock)?;
+                report_statusline(&path, &sl_report);
+            }
+        }
+        Command::Statusline(args) => {
+            let paths = paths::resolve()?;
+            let mut payload = String::new();
+            tokio::io::stdin().read_to_string(&mut payload).await?;
+            let line =
+                statusline::render(&payload, &paths.sessions_root, args.wrap_v1.as_deref()).await;
+            println!("{line}");
         }
         Command::Emit(args) => {
             let paths = paths::resolve()?;
@@ -309,5 +344,34 @@ fn report_skill(path: &std::path::Path, report: &SkillReport) {
     }
     if let Some(backup) = &report.backup {
         println!("Backed up previous skill to {}", backup.display());
+    }
+}
+
+/// Print a short, honest summary of what the statusline step of `init` did.
+fn report_statusline(path: &std::path::Path, report: &StatuslineReport) {
+    let path = path.display();
+    match report.outcome {
+        StatuslineOutcome::Installed => println!("Installed the recording statusline in {path}"),
+        StatuslineOutcome::Wrapped => println!(
+            "Wrapped your existing statusLine in {path}; it keeps rendering ahead of the \
+             witness segment, and init --remove restores it exactly"
+        ),
+        StatuslineOutcome::AlreadyInstalled => {
+            println!("Recording statusline already installed in {path}; no changes")
+        }
+        StatuslineOutcome::Removed => println!("Removed the recording statusline from {path}"),
+        StatuslineOutcome::Restored => {
+            println!("Restored your original statusLine in {path}")
+        }
+        StatuslineOutcome::NothingToRemove => {
+            println!("No agent-witness statusline in {path}; nothing to remove")
+        }
+        StatuslineOutcome::SkippedUnrecognized => eprintln!(
+            "Warning: statusLine in {path} has a shape agent-witness does not manage; \
+             left untouched"
+        ),
+    }
+    if let Some(backup) = &report.backup {
+        println!("Backed up previous settings to {}", backup.display());
     }
 }

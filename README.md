@@ -67,6 +67,23 @@ an agent narrating its own audit trail: open the record directly with
 `init --remove` uninstalls the skill together with the hooks; a foreign file at
 that path is never touched.
 
+## Always-on visibility: the recording statusline
+
+```bash
+agent-witness init --statusline    # opt-in: show recording state in Claude Code's status line
+```
+
+Claude Code's status line then carries a live segment for the session you are
+in: `● witness 42ev` while events are landing, and — the part that matters —
+`○ witness not recording` when they are not. A silently broken hook setup
+becomes visible instead of discovered weeks later.
+
+Already have a statusLine command? It is **wrapped, not replaced**: your
+command keeps rendering first (`your-segment | ● witness 42ev`), its original
+definition is preserved verbatim inside the wrapper, and `init --remove`
+restores it exactly. A statusLine shape agent-witness doesn't recognize is
+left untouched with a warning — never clobbered.
+
 ## Live sessions: the live end of the audit trail
 
 `top` and `show --follow` are the *now* end of the same audit record `show`/`report`

@@ -8,6 +8,7 @@ version = "0.0.3"
 dependencies = [
  "agent-witness-core",
  "anyhow",
+ "base64",
  "clap",
  "ratatui",
  "serde",

@@ -154,7 +154,7 @@ pub fn run_init(settings_path: &Path, remove: bool, clock: &dyn Clock) -> Result
 /// Returns `Ok(None)` if the file does not exist, `Ok(Some(empty))` for an
 /// empty file, and an error (without touching the file) if it is not valid JSON
 /// or not a JSON object.
-fn load_settings(path: &Path) -> Result<Option<Map<String, Value>>> {
+pub(crate) fn load_settings(path: &Path) -> Result<Option<Map<String, Value>>> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -310,7 +310,7 @@ fn backup_existing(path: &Path, clock: &dyn Clock) -> Result<Option<PathBuf>> {
 
 /// Serialize and write the settings object, creating parent directories as
 /// needed. Written pretty-printed with a trailing newline.
-fn write_settings(path: &Path, root: &Map<String, Value>) -> Result<()> {
+pub(crate) fn write_settings(path: &Path, root: &Map<String, Value>) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
