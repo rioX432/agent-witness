@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::event::{AgentEvent, SCHEMA_VERSION};
+use crate::transcript::SessionUsage;
 
 /// File name for the per-session event log.
 const EVENTS_FILE: &str = "events.jsonl";
@@ -27,6 +28,12 @@ const META_FILE: &str = "meta.json";
 /// ADR-0001): every raw hook payload is kept verbatim alongside its normalized
 /// event, linked by `raw_event_ref`.
 const RAW_FILE: &str = "raw.jsonl";
+/// File name for the per-session usage sidecar. Derived data: recomputed from the
+/// whole transcript and overwritten on each ingest, written atomically.
+const USAGE_FILE: &str = "usage.json";
+/// Temporary sibling of [`USAGE_FILE`]; written then renamed so a reader never
+/// observes a torn file.
+const USAGE_TMP_FILE: &str = "usage.json.tmp";
 
 /// Errors from the session store.
 #[derive(Debug, thiserror::Error)]
@@ -238,6 +245,43 @@ impl SessionStore {
             records,
             skipped_lines,
         })
+    }
+
+    /// Write (overwriting) a session's `usage.json` sidecar atomically.
+    ///
+    /// The record is derived data recomputed from the whole transcript, so a
+    /// full overwrite is idempotent by construction (no cross-reingest dedup
+    /// needed). Written to a `.tmp` sibling then renamed into place so a
+    /// concurrent reader never sees a half-written file. The session directory
+    /// is created if absent (usage can precede any hook event).
+    pub fn write_usage(&self, usage: &SessionUsage) -> Result<(), StoreError> {
+        validate_session_id(&usage.session)?;
+        let dir = self.session_dir(&usage.session);
+        fs::create_dir_all(&dir).map_err(|e| StoreError::io(&dir, e))?;
+
+        let tmp_path = dir.join(USAGE_TMP_FILE);
+        let final_path = dir.join(USAGE_FILE);
+        let json = serde_json::to_string_pretty(usage)?;
+        fs::write(&tmp_path, json).map_err(|e| StoreError::io(&tmp_path, e))?;
+        fs::rename(&tmp_path, &final_path).map_err(|e| StoreError::io(&final_path, e))?;
+        Ok(())
+    }
+
+    /// Read a session's `usage.json` sidecar.
+    ///
+    /// Returns `Ok(None)` when the file is absent — absence means "usage
+    /// unavailable / no claim", never "0 tokens used". A malformed/unreadable
+    /// `usage.json` also degrades to `Ok(None)` (skip-and-continue, ADR-0002) so
+    /// a future cross-session digest never fails wholesale on one bad sidecar.
+    pub fn read_usage(&self, session_id: &str) -> Result<Option<SessionUsage>, StoreError> {
+        validate_session_id(session_id)?;
+        let usage_path = self.session_dir(session_id).join(USAGE_FILE);
+        let bytes = match fs::read(&usage_path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(StoreError::io(&usage_path, e)),
+        };
+        Ok(serde_json::from_slice(&bytes).ok())
     }
 }
 
@@ -541,6 +585,70 @@ mod tests {
         let read = store.read_raw("sess-raw-bad").unwrap();
         assert_eq!(read.records, vec![rec]);
         assert_eq!(read.skipped_lines, 1);
+    }
+
+    fn sample_usage(session: &str) -> SessionUsage {
+        const LINE: &str = r#"{"type":"assistant","message":{"id":"m","model":"claude-fable-5","content":[],"usage":{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":30,"cache_read_input_tokens":40}}}"#;
+        crate::transcript::aggregate_transcript_usage(LINE, session)
+    }
+
+    #[test]
+    fn write_usage_then_read_usage_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let usage = sample_usage("sess-usage");
+
+        store.write_usage(&usage).unwrap();
+
+        let back = store.read_usage("sess-usage").unwrap();
+        assert_eq!(back, Some(usage));
+        // The sidecar exists and the temp file was renamed away.
+        let dir = tmp.path().join("sess-usage");
+        assert!(dir.join(USAGE_FILE).is_file());
+        assert!(!dir.join(USAGE_TMP_FILE).exists());
+    }
+
+    #[test]
+    fn write_usage_overwrites_previous_sidecar() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        store.write_usage(&sample_usage("sess-ow")).unwrap();
+        // A second write of the same derived data must not accumulate.
+        store.write_usage(&sample_usage("sess-ow")).unwrap();
+
+        let back = store.read_usage("sess-ow").unwrap().unwrap();
+        assert_eq!(back.per_model.len(), 1);
+        assert_eq!(back.per_model[0].input_tokens, 10);
+    }
+
+    #[test]
+    fn read_usage_is_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        // Absent file == no claim, never an error and never zeroed totals.
+        assert_eq!(store.read_usage("never-written").unwrap(), None);
+    }
+
+    #[test]
+    fn read_usage_degrades_to_none_on_corrupted_file() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let dir = tmp.path().join("sess-bad-usage");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(USAGE_FILE), b"{ not valid json").unwrap();
+
+        // Corrupted sidecar degrades gracefully rather than erroring the read.
+        assert_eq!(store.read_usage("sess-bad-usage").unwrap(), None);
+    }
+
+    #[test]
+    fn usage_read_write_reject_invalid_session_ids() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut bad = sample_usage("../escape");
+        bad.session = "../escape".to_string();
+        assert!(store.write_usage(&bad).is_err());
+        assert!(store.read_usage("../escape").is_err());
     }
 
     #[test]

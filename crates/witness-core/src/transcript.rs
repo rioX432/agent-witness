@@ -11,6 +11,9 @@
 //! events are [`crate::Attribution::Observed`], never `Direct`.
 
 mod transcript_v1;
+pub mod usage;
+
+pub use usage::{aggregate_transcript_usage, ModelUsage, SessionUsage, UsageSourceStatus};
 
 use crate::event::AgentEvent;
 

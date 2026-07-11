@@ -193,6 +193,14 @@ impl Receiver {
             }
         }
 
+        // Recompute and overwrite the per-session usage sidecar. Independent of
+        // the prose parse above: a tool-only message carries no text event yet
+        // still reports usage, so this scans ALL assistant lines. Whole-transcript
+        // recompute + overwrite makes it idempotent by construction (unlike the
+        // event append, no dedup against the store is needed).
+        let usage = transcript::aggregate_transcript_usage(transcript_content, session);
+        self.store.write_usage(&usage)?;
+
         Ok(TranscriptIngested {
             session: session.to_string(),
             stats: read.stats,
@@ -492,6 +500,82 @@ mod tests {
         assert_eq!(out.appended, 0);
         assert_eq!(out.stats.total_lines, 2);
         assert!(rx.store().read("s1").unwrap().events.is_empty());
+    }
+
+    /// The sanitized golden transcript: msg_0001 is split across 3 lines
+    /// (text + 2 tool_use) all repeating one usage; msg_0002 is one line.
+    const FIXTURE_TRANSCRIPT: &str =
+        include_str!("../../../tests/fixtures/session-basic/transcript.jsonl");
+
+    #[test]
+    fn ingest_transcript_writes_deduped_per_model_usage_sidecar() {
+        use crate::transcript::UsageSourceStatus;
+
+        let (_tmp, mut rx) = receiver();
+        rx.ingest_transcript("session-basic", FIXTURE_TRANSCRIPT, &FixedClock(TS))
+            .unwrap();
+
+        let usage = rx
+            .store()
+            .read_usage("session-basic")
+            .unwrap()
+            .expect("usage.json written after a successful transcript read");
+
+        assert_eq!(usage.source_status, UsageSourceStatus::Ok);
+        assert_eq!(usage.attribution, Attribution::Observed);
+        // msg_0001 (3 lines) + msg_0002 (1 line) => 2 unique, 2 duplicate lines.
+        assert_eq!(usage.messages_counted, 2);
+        assert_eq!(usage.duplicate_usage_lines_deduped, 2);
+        assert_eq!(usage.messages_missing_usage, 0);
+        assert_eq!(usage.assistant_lines_missing_message_id, 0);
+
+        assert_eq!(usage.per_model.len(), 1);
+        let m = &usage.per_model[0];
+        assert_eq!(m.model, "claude-fable-5");
+        assert_eq!(m.messages, 2);
+        // Deduped sums, verified against the fixture (4116+2, 263+68, 4622+4571,
+        // 15001+19623) — NOT tripled by msg_0001's repeated lines.
+        assert_eq!(m.input_tokens, 4118);
+        assert_eq!(m.output_tokens, 331);
+        assert_eq!(m.cache_creation_input_tokens, 9193);
+        assert_eq!(m.cache_read_input_tokens, 34624);
+    }
+
+    #[test]
+    fn ingest_transcript_usage_sidecar_is_idempotent() {
+        let (_tmp, mut rx) = receiver();
+        rx.ingest_transcript("session-basic", FIXTURE_TRANSCRIPT, &FixedClock(TS))
+            .unwrap();
+        let first = rx.store().read_usage("session-basic").unwrap();
+        // Re-ingesting the same transcript overwrites, never doubles.
+        rx.ingest_transcript("session-basic", FIXTURE_TRANSCRIPT, &FixedClock(TS))
+            .unwrap();
+        let second = rx.store().read_usage("session-basic").unwrap();
+
+        assert_eq!(first, second);
+        let m = &second.unwrap().per_model[0];
+        assert_eq!(m.input_tokens, 4118);
+        assert_eq!(m.messages, 2);
+    }
+
+    #[test]
+    fn ingest_transcript_without_usage_writes_no_usage_parsed_sidecar() {
+        use crate::transcript::UsageSourceStatus;
+
+        let (_tmp, mut rx) = receiver();
+        // A transcript that is read but carries no usable usage still records an
+        // honest negative — distinct from the file being absent ("not read").
+        rx.ingest_transcript("s1", "{broken\n{\"type\":\"user\"}", &FixedClock(TS))
+            .unwrap();
+
+        let usage = rx
+            .store()
+            .read_usage("s1")
+            .unwrap()
+            .expect("sidecar written");
+        assert_eq!(usage.source_status, UsageSourceStatus::NoUsageParsed);
+        assert_eq!(usage.messages_counted, 0);
+        assert!(usage.per_model.is_empty());
     }
 
     #[test]

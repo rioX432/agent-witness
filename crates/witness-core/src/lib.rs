@@ -35,6 +35,7 @@ pub use store::{
     RawRead, RawRecord, SessionMeta, SessionRead, SessionStore, SessionWriter, StoreError,
 };
 pub use transcript::{
-    parse_transcript, TranscriptRead, TranscriptStats,
-    ADAPTER_VERSION as TRANSCRIPT_ADAPTER_VERSION, TRANSCRIPT_RAW_REF_PREFIX,
+    aggregate_transcript_usage, parse_transcript, ModelUsage, SessionUsage, TranscriptRead,
+    TranscriptStats, UsageSourceStatus, ADAPTER_VERSION as TRANSCRIPT_ADAPTER_VERSION,
+    TRANSCRIPT_RAW_REF_PREFIX,
 };
