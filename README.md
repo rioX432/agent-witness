@@ -47,6 +47,25 @@ agent-witness top                 # htop-like live view of every running session
 - Every event is labeled `direct | observed | inferred` — we record what we saw, not what we guess
 - Planned interop: export to Cursor's agent-trace format
 
+## Ask your agent: the `/witness` skill
+
+`init` also installs a `/witness` skill (`~/.claude/skills/witness/`), so you
+can query the audit record without leaving a Claude Code session:
+
+```
+/witness                 # what did this directory's latest session do?
+/witness @project:avvy   # summarize another project's latest session
+```
+
+Under the hood the skill just runs `agent-witness report` and summarizes the
+output. **Trust boundary:** this is a convenience view, not the trusted read
+path — the agent summarizing the record is the same kind of agent the record
+observes. For incident review (e.g. suspected prompt injection), don't rely on
+an agent narrating its own audit trail: open the record directly with
+`agent-witness show` / `agent-witness report` in your own terminal.
+`init --remove` uninstalls the skill together with the hooks; a foreign file at
+that path is never touched.
+
 ## Live sessions: the live end of the audit trail
 
 `top` and `show --follow` are the *now* end of the same audit record `show`/`report`

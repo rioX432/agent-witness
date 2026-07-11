@@ -8,11 +8,12 @@ use std::sync::Arc;
 
 use agent_witness::init::{self, InitOutcome, InitReport};
 use agent_witness::report::{self, JsonExporter, MarkdownExporter, SessionExporter};
+use agent_witness::skill::{self, SkillOutcome, SkillReport};
 use agent_witness::{emit, ls, paths, pick, top, tui, watch};
 use agent_witness_core::{
     collect_summaries, resolve, Clock, SessionStore, SystemClock, DEFAULT_LIVE_WINDOW_MS,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use tokio::io::AsyncReadExt;
 
@@ -33,9 +34,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Register the Claude Code hooks that record this session (or remove them
-    /// with --remove). Edits settings.json safely: idempotent, merge-preserving,
-    /// and backed up before any change.
+    /// Register the Claude Code hooks that record this session and install the
+    /// /witness skill (or remove both with --remove). Edits settings.json
+    /// safely: idempotent, merge-preserving, and backed up before any change.
     Init(InitArgs),
     /// Claude Code hooks command: read one hook payload on stdin and record it
     /// (forwards to the `watch` daemon, or writes to the store if none is up).
@@ -108,7 +109,8 @@ struct InitArgs {
     /// Edit ./.claude/settings.json instead of ~/.claude/settings.json.
     #[arg(long)]
     project: bool,
-    /// Remove agent-witness hook entries instead of adding them.
+    /// Remove agent-witness hook entries and the /witness skill instead of
+    /// adding them.
     #[arg(long)]
     remove: bool,
 }
@@ -130,7 +132,20 @@ async fn main() -> Result<()> {
         Command::Init(args) => {
             let path = init::resolve_settings_path(args.project)?;
             let report = init::run_init(&path, args.remove, &SystemClock)?;
-            report_init(&path.display().to_string(), &report);
+            report_init(&path, &report);
+            // The hooks edit above is already committed; if the skill step
+            // fails, the error must say so, or a nonzero exit reads as
+            // "nothing was changed".
+            let skill_path = skill::resolve_skill_path(args.project)?;
+            let skill_report = skill::run_skill(&skill_path, args.remove, &SystemClock)
+                .with_context(|| {
+                    format!(
+                        "note: the hooks change in {} was already applied; \
+                         only the /witness skill step failed",
+                        path.display()
+                    )
+                })?;
+            report_skill(&skill_path, &skill_report);
         }
         Command::Emit(args) => {
             let paths = paths::resolve()?;
@@ -252,7 +267,8 @@ fn resolve_session(store: &SessionStore, selector: Option<&str>) -> Result<Strin
 }
 
 /// Print a short, honest summary of what `init` did.
-fn report_init(path: &str, report: &InitReport) {
+fn report_init(path: &std::path::Path, report: &InitReport) {
+    let path = path.display();
     match report.outcome {
         InitOutcome::Installed => println!("Registered agent-witness hooks in {path}"),
         InitOutcome::AlreadyInstalled => {
@@ -265,5 +281,33 @@ fn report_init(path: &str, report: &InitReport) {
     }
     if let Some(backup) = &report.backup {
         println!("Backed up previous settings to {}", backup.display());
+    }
+}
+
+/// Print a short, honest summary of what the skill step of `init` did.
+///
+/// The foreign-file warning goes to stderr (matching `resolve_session`'s note
+/// convention) so it survives stdout piping; the skill is optional, so a
+/// skipped install is a warning, not a failed `init` — the hooks are the core
+/// function and they succeeded.
+fn report_skill(path: &std::path::Path, report: &SkillReport) {
+    let path = path.display();
+    match report.outcome {
+        SkillOutcome::Installed => println!("Installed the /witness skill at {path}"),
+        SkillOutcome::Updated => println!("Updated the /witness skill at {path}"),
+        SkillOutcome::AlreadyInstalled => {
+            println!("/witness skill already installed at {path}; no changes")
+        }
+        SkillOutcome::Removed => println!("Removed the /witness skill from {path}"),
+        SkillOutcome::NothingToRemove => {
+            println!("No /witness skill found at {path}; nothing to remove")
+        }
+        SkillOutcome::SkippedForeign => eprintln!(
+            "Warning: {path} exists but was not installed by agent-witness \
+             (or is a symlink / not UTF-8); left untouched"
+        ),
+    }
+    if let Some(backup) = &report.backup {
+        println!("Backed up previous skill to {}", backup.display());
     }
 }
