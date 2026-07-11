@@ -10,7 +10,7 @@ use agent_witness::init::{self, InitOutcome, InitReport};
 use agent_witness::report::{self, JsonExporter, MarkdownExporter, SessionExporter};
 use agent_witness::skill::{self, SkillOutcome, SkillReport};
 use agent_witness::statusline::{self, StatuslineOutcome, StatuslineReport};
-use agent_witness::{emit, ls, paths, pick, top, tui, watch};
+use agent_witness::{emit, inventory, ls, paths, pick, top, tui, watch};
 use agent_witness_core::{
     collect_summaries, resolve, Clock, SessionStore, SystemClock, DEFAULT_LIVE_WINDOW_MS,
 };
@@ -53,6 +53,10 @@ enum Command {
     /// Resident htop-like view of the sessions running right now; Enter drills
     /// into one's timeline, q quits.
     Top(TopArgs),
+    /// Report configured vs actually-used MCP servers and skills, plus the diff
+    /// — an attack-surface / capability accounting (configured now vs observed
+    /// used over a window). Reads config files ephemerally; nothing is recorded.
+    Inventory(InventoryArgs),
     /// Claude Code statusLine command: read the statusline JSON on stdin and
     /// print a one-line recording segment for the current session (install it
     /// with `init --statusline`).
@@ -89,6 +93,19 @@ struct TopArgs {
     /// off the live view).
     #[arg(long, default_value_t = DEFAULT_WINDOW_SECS)]
     window: u64,
+}
+
+/// Arguments for `agent-witness inventory`.
+#[derive(Debug, Args)]
+struct InventoryArgs {
+    /// Only count observed use at or after this relative time (e.g. `30d`,
+    /// `7d`, `24h`). Filters the used side only — configured is always read
+    /// as-of-now. Omit for all recorded history.
+    #[arg(long, value_name = "WHEN")]
+    since: Option<String>,
+    /// Emit machine-readable JSON instead of markdown (same data).
+    #[arg(long)]
+    json: bool,
 }
 
 /// Arguments for `agent-witness report`.
@@ -270,6 +287,36 @@ async fn main() -> Result<()> {
             // async reactor so polling never starves the runtime.
             tokio::task::spawn_blocking(move || top::run_top(&store, &SystemClock, window_ms))
                 .await??;
+        }
+        Command::Inventory(args) => {
+            let paths = paths::resolve()?;
+            let store = SessionStore::new(&paths.sessions_root);
+            // Resolve the clock, home, and cwd once at the edge; the aggregator
+            // stays a pure function of these injected values.
+            let now_ms = SystemClock.now_ms();
+            let since_ms = match args.since.as_deref() {
+                Some(when) => Some(now_ms.saturating_sub(inventory::parse_relative_ms(when)?)),
+                None => None,
+            };
+            let home = paths::home_dir()?;
+            let cwd = std::env::current_dir()?;
+            let configured_mcp = inventory::read_configured_mcp(&home, &cwd);
+            let configured_skills = inventory::read_configured_skills(&home, &cwd);
+            let (used_mcp, used_skills) = inventory::collect_used(&store)?;
+            let report = inventory::build_inventory(
+                configured_mcp,
+                configured_skills,
+                used_mcp,
+                used_skills,
+                now_ms,
+                since_ms,
+            );
+            let rendered = if args.json {
+                inventory::to_json(&report)?
+            } else {
+                inventory::to_markdown(&report)
+            };
+            print!("{rendered}");
         }
     }
 
