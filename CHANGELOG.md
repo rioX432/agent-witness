@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-07-11
+
+Consumption-surface release: the record now reaches you where you already are
+(the status line, the conversation, the PR), instead of waiting for a CLI habit
+that dogfooding proved nobody forms.
+
 ### Added
 - Recording statusline (opt-in: `init --statusline`): Claude Code's status line shows `● witness <n>ev` for the current session — and `○ witness not recording` when hooks are silently broken. An existing statusLine command is wrapped, not replaced (it renders ahead of the witness segment; the original is preserved verbatim inside the wrapper and `init --remove` restores it exactly) (#32)
 - `init` now registers the `SessionEnd` hook and the pipeline records it (with its `reason`) as a first-class event: session termination is now *directly observed*, so cleanly ended sessions read idle in `ls`/`top` immediately instead of appearing live until the recency window lapses. Crashed sessions still fall back to honest window inference. **Re-run `agent-witness init` after upgrading** to register the new event (#31)
