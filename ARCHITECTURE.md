@@ -105,3 +105,4 @@ runs exactly the same gate.
 | [0002](docs/adr/0002-attribution-honesty.md) | Every event carries attribution + confidence; never overclaim |
 | [0003](docs/adr/0003-dev-harness-and-review-accumulation.md) | Issue-driven dev harness; recurring review findings promoted to rules |
 | [0004](docs/adr/0004-distribution-cargo-dist.md) | Distribution via dist (cargo-dist): shell / Homebrew / binstall from one config |
+| [0005](docs/adr/0005-claim-vs-reality-verification.md) | Claim-vs-reality: claim-aware presentation, never claim extraction — evidence beside the final message, no truth verdict (proposed) |
