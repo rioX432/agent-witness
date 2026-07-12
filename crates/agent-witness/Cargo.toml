@@ -1,7 +1,7 @@
 [package]
 name = "agent-witness"
 version = "0.0.5"
-description = "A session recorder and audit log for AI coding agents"
+description = "The audit trail for AI coding agents — check what a Claude Code session actually did, not just what it said"
 homepage = "https://github.com/rioX432/agent-witness"
 readme = "../../README.md"
 keywords = ["claude", "agent", "audit", "observability", "cli"]
