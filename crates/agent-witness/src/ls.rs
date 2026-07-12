@@ -142,6 +142,39 @@ pub fn render_table(rows: &[LsRow]) -> String {
     out
 }
 
+/// Render the default `ls` view. Unless `show_all`, sessions with no tool
+/// activity (a lone `SessionStart`, or a started-then-idle stub — nothing to
+/// audit) are hidden and a footer discloses how many. Honesty (ADR-0002): data
+/// is never dropped silently, and `--all` always shows everything (issue #73).
+pub fn render_default(rows: &[LsRow], show_all: bool) -> String {
+    if show_all {
+        return render_table(rows);
+    }
+    let active: Vec<LsRow> = rows.iter().filter(|r| r.tools > 0).cloned().collect();
+    let hidden = rows.len() - active.len();
+
+    if active.is_empty() {
+        // "Nothing recorded" and "everything empty" are different states; only the
+        // former should suggest `init`.
+        if rows.is_empty() {
+            return render_table(rows);
+        }
+        return format!(
+            "No sessions with tool activity ({hidden} recorded with none). \
+             Run `agent-witness ls --all` to show them.\n"
+        );
+    }
+
+    let mut out = render_table(&active);
+    if hidden > 0 {
+        out.push_str(&format!(
+            "\n{hidden} session(s) with no tool activity hidden — \
+             run `agent-witness ls --all` to show.\n"
+        ));
+    }
+    out
+}
+
 /// Append one padded, gap-separated row (trailing whitespace trimmed).
 fn push_row(out: &mut String, cells: &[String; COLS], widths: &[usize; COLS]) {
     let line: Vec<String> = cells
@@ -301,5 +334,49 @@ mod tests {
         let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
         // Newest start first; equal starts break by id ascending.
         assert_eq!(ids, vec!["dup1", "dup2", "ccc", "bbb", "aaa"]);
+    }
+
+    /// A row with no tool activity (the empty-stub shape hidden by default).
+    fn empty_row(id: &str) -> LsRow {
+        LsRow {
+            tools: 0,
+            events: 1,
+            ..row(id, false)
+        }
+    }
+
+    #[test]
+    fn render_default_hides_empty_sessions_and_discloses_count() {
+        let rows = vec![
+            row("active-a", false),
+            empty_row("empty-a"),
+            empty_row("empty-b"),
+        ];
+        let out = render_default(&rows, false);
+        assert!(out.contains("active-a"));
+        assert!(!out.contains("empty-a"));
+        assert!(!out.contains("empty-b"));
+        // The hidden count is disclosed, never silent.
+        assert!(out.contains("2 session(s) with no tool activity hidden"));
+        assert!(out.contains("--all"));
+    }
+
+    #[test]
+    fn render_default_all_shows_every_session_without_footer() {
+        let rows = vec![row("active-a", false), empty_row("empty-a")];
+        let out = render_default(&rows, true);
+        assert!(out.contains("active-a"));
+        assert!(out.contains("empty-a"));
+        assert!(!out.contains("hidden"));
+    }
+
+    #[test]
+    fn render_default_all_empty_states_it_without_the_init_hint() {
+        let rows = vec![empty_row("empty-a"), empty_row("empty-b")];
+        let out = render_default(&rows, false);
+        assert!(out.contains("No sessions with tool activity"));
+        assert!(out.contains("2 recorded with none"));
+        // There ARE sessions, so the `init` hint would be false (ADR-0002).
+        assert!(!out.contains("agent-witness init"));
     }
 }
