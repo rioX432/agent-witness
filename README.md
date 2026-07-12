@@ -254,9 +254,12 @@ agent-witness digest --json       # same data, machine-readable
 
 Each project section reports session count and summed duration, user prompts,
 tool calls, distinct files touched, Bash commands, destructive-class command-flag
-counts by severity, and per-model token totals. The window flags are mutually
-exclusive; the header states the exact bounds (e.g. `UTC today, 2026-07-11
-00:00:00Z to 2026-07-11 14:32:10Z`).
+counts by severity, recorded test/build/lint command counts with their observed
+status (`ok` / `failed` / `no-result` — the cross-session roll-up of the
+[claim-vs-reality](#claim-vs-reality-reports-final-message-panel) facts), and
+per-model token totals. The window flags are mutually exclusive; the header
+states the exact bounds (e.g. `UTC today, 2026-07-11 00:00:00Z to 2026-07-11
+14:32:10Z`).
 
 **Facts only — judgments live elsewhere (deliberately).** The digest reports
 counts, durations, and token totals and makes **no** claim about efficiency,

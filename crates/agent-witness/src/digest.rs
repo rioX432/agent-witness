@@ -39,6 +39,7 @@ use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::claim::test_command_runs;
 use crate::flags::{flags_for_command, FlagSeverity};
 use crate::inventory::parse_relative_ms;
 use crate::timefmt::{format_duration_ms, format_utc};
@@ -144,6 +145,61 @@ pub struct FlagCounts {
     pub warning: usize,
 }
 
+/// Recorded test/build/lint command activity, aggregated (ADR-0005 / issue #64).
+/// These are the cross-session tally of the per-session claim-vs-reality facts:
+/// how many test-like commands were recorded and their observed status. Facts
+/// only — a `no_result` is an unpaired call (a failed Bash fires no completion
+/// hook), surfaced as *outcome not observed*, never as a failure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct TestActivity {
+    /// Recorded `test`-kind commands.
+    pub test: usize,
+    /// Recorded `build`-kind commands.
+    pub build: usize,
+    /// Recorded `lint`-kind commands.
+    pub lint: usize,
+    /// Of all test-like commands, those with an `ok` result.
+    pub ok: usize,
+    /// Of all test-like commands, those with a `failed` result.
+    pub failed: usize,
+    /// Of all test-like commands, those with no paired result (outcome not
+    /// observed — never counted as a failure).
+    pub no_result: usize,
+}
+
+impl TestActivity {
+    /// Tally one classified command by kind and observed status.
+    fn record(&mut self, kind: &str, status: &str) {
+        match kind {
+            "test" => self.test += 1,
+            "build" => self.build += 1,
+            "lint" => self.lint += 1,
+            _ => {}
+        }
+        match status {
+            "ok" => self.ok += 1,
+            "failed" => self.failed += 1,
+            "no-result" => self.no_result += 1,
+            _ => {}
+        }
+    }
+
+    /// Add another activity's counts into this one.
+    fn merge(&mut self, other: &TestActivity) {
+        self.test += other.test;
+        self.build += other.build;
+        self.lint += other.lint;
+        self.ok += other.ok;
+        self.failed += other.failed;
+        self.no_result += other.no_result;
+    }
+
+    /// Total test-like commands recorded (test + build + lint).
+    fn total(&self) -> usize {
+        self.test + self.build + self.lint
+    }
+}
+
 /// Per-model token totals, summed across the sessions that had a usage sidecar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelTokenTotals {
@@ -205,6 +261,8 @@ pub struct ProjectDigest {
     pub files_touched: usize,
     /// Destructive-class command-flag counts by matcher severity.
     pub flags: FlagCounts,
+    /// Recorded test/build/lint command activity (claim-vs-reality facts).
+    pub test_activity: TestActivity,
     /// Per-model token totals across sessions that had a usage sidecar.
     pub per_model: Vec<ModelTokenTotals>,
     /// Distinct models observed with usage, sorted by name.
@@ -235,6 +293,8 @@ pub struct OverallTotals {
     pub files_touched: usize,
     /// Command-flag counts by matcher severity.
     pub flags: FlagCounts,
+    /// Recorded test/build/lint command activity across all included sessions.
+    pub test_activity: TestActivity,
     /// Per-model token totals across all sessions that had usage.
     pub per_model: Vec<ModelTokenTotals>,
     /// Distinct models observed with usage, sorted.
@@ -446,6 +506,7 @@ struct SessionMetrics {
     commands: usize,
     files: Vec<String>,
     flags: FlagCounts,
+    test_activity: TestActivity,
     per_model: Vec<ModelUsage>,
     usage_unavailable: bool,
 }
@@ -529,6 +590,14 @@ fn session_metrics(input: &SessionInput) -> SessionMetrics {
         }
     }
 
+    // Test/build/lint command facts, from the same classifier the per-session
+    // claim-vs-reality panel uses (issue #64). Status is the timeline-paired
+    // outcome; `no-result` is never counted as a failure.
+    let mut test_activity = TestActivity::default();
+    for run in test_command_runs(&input.events) {
+        test_activity.record(run.kind, run.status);
+    }
+
     // A missing sidecar is "usage unavailable" (contributes zero, never recorded
     // as zero tokens). A present sidecar with no parseable usage simply has an
     // empty `per_model` — it is available, just empty.
@@ -548,6 +617,7 @@ fn session_metrics(input: &SessionInput) -> SessionMetrics {
         commands,
         files,
         flags,
+        test_activity,
         per_model,
         usage_unavailable,
     }
@@ -565,6 +635,7 @@ struct ProjectAcc {
     commands: usize,
     files: BTreeSet<String>,
     flags: FlagCounts,
+    test_activity: TestActivity,
     per_model: BTreeMap<String, ModelTokenTotals>,
     usage_unavailable: usize,
     multi_cwd: usize,
@@ -583,6 +654,7 @@ impl ProjectAcc {
             commands: 0,
             files: BTreeSet::new(),
             flags: FlagCounts::default(),
+            test_activity: TestActivity::default(),
             per_model: BTreeMap::new(),
             usage_unavailable: 0,
             multi_cwd: 0,
@@ -600,6 +672,7 @@ impl ProjectAcc {
         }
         self.flags.critical += metrics.flags.critical;
         self.flags.warning += metrics.flags.warning;
+        self.test_activity.merge(&metrics.test_activity);
         for usage in &metrics.per_model {
             merge_model(&mut self.per_model, usage);
         }
@@ -624,6 +697,7 @@ impl ProjectAcc {
             commands: self.commands,
             files_touched: self.files.len(),
             flags: self.flags,
+            test_activity: self.test_activity,
             per_model: self.per_model.into_values().collect(),
             models_used,
             sessions_usage_unavailable: self.usage_unavailable,
@@ -656,6 +730,7 @@ fn overall_totals(
         commands: 0,
         files_touched: global_files.len(),
         flags: FlagCounts::default(),
+        test_activity: TestActivity::default(),
         per_model: Vec::new(),
         models_used: global_models.keys().cloned().collect(),
     };
@@ -667,6 +742,7 @@ fn overall_totals(
         totals.commands += project.commands;
         totals.flags.critical += project.flags.critical;
         totals.flags.warning += project.flags.warning;
+        totals.test_activity.merge(&project.test_activity);
     }
     totals.per_model = global_models.into_values().collect();
     totals
@@ -777,6 +853,10 @@ fn render_totals(out: &mut String, totals: &OverallTotals) {
         &format!("- Files touched (distinct): {}", totals.files_touched),
     );
     push_line(out, &format!("- {}", flag_line(&totals.flags)));
+    push_line(
+        out,
+        &format!("- {}", test_activity_line(&totals.test_activity)),
+    );
     push_line(out, "- Token totals from available usage sidecars:");
     render_model_totals(out, &totals.per_model);
     push_line(out, "");
@@ -812,6 +892,10 @@ fn render_projects(out: &mut String, projects: &[ProjectDigest]) {
             &format!("- Files touched (distinct): {}", project.files_touched),
         );
         push_line(out, &format!("- {}", flag_line(&project.flags)));
+        push_line(
+            out,
+            &format!("- {}", test_activity_line(&project.test_activity)),
+        );
         if !project.models_used.is_empty() {
             push_line(
                 out,
@@ -843,6 +927,26 @@ fn flag_line(flags: &FlagCounts) -> String {
     format!(
         "Command flags by matcher severity: critical {}, warning {}",
         flags.critical, flags.warning
+    )
+}
+
+/// Facts-only summary of recorded test/build/lint commands and their observed
+/// status. `no-result` is an unpaired call (a failed Bash fires no completion
+/// hook) — surfaced as such, never as a failure or as "tests did not pass".
+fn test_activity_line(activity: &TestActivity) -> String {
+    if activity.total() == 0 {
+        return "Test-like commands recorded: 0".to_string();
+    }
+    format!(
+        "Test-like commands recorded: {} (test {}, build {}, lint {}) — \
+         status: {} ok, {} failed, {} no-result",
+        activity.total(),
+        activity.test,
+        activity.build,
+        activity.lint,
+        activity.ok,
+        activity.failed,
+        activity.no_result,
     )
 }
 
@@ -918,6 +1022,12 @@ fn render_scope(out: &mut String) {
         out,
         "- Command flag counts are destructive-class pattern-matcher hits over \
          recorded command text, not policy judgments or verdicts.",
+    );
+    push_line(
+        out,
+        "- Test-like command counts are a best-effort classifier over recorded \
+         command text (a runner not in the table is not counted); a `no-result` \
+         is an unpaired call whose outcome was not observed, never a failure.",
     );
     push_line(
         out,
@@ -1276,6 +1386,60 @@ mod tests {
         assert_eq!(proj.commands, 3);
         assert_eq!(report.totals.flags.critical, 1);
         assert_eq!(report.totals.flags.warning, 1);
+    }
+
+    // --- test-like command activity (issue #64) ---------------------------
+
+    #[test]
+    fn test_activity_tallies_kind_and_status_per_project_and_overall() {
+        let cwd = "/w/proj";
+        let events = vec![
+            // A paired `cargo test` → ok.
+            tool_call(
+                NOW,
+                json!({"tool_name": "Bash", "tool_use_id": "t1",
+                       "tool_input": {"command": "cargo test"}, "cwd": cwd}),
+            ),
+            event(
+                NOW + 1,
+                Source::Hooks,
+                EventKind::ToolResult,
+                json!({"tool_name": "Bash", "tool_use_id": "t1"}),
+            ),
+            // An unpaired `cargo build` → no-result, never a failure.
+            tool_call(
+                NOW + 2,
+                json!({"tool_name": "Bash", "tool_use_id": "t2",
+                       "tool_input": {"command": "cargo build"}, "cwd": cwd}),
+            ),
+            // A non-test command is not counted.
+            bash(NOW + 3, "ls -la", cwd),
+        ];
+        let report = digest_all(&[input("s", NOW, events)]);
+
+        let proj = project(&report, "proj");
+        assert_eq!(proj.test_activity.test, 1);
+        assert_eq!(proj.test_activity.build, 1);
+        assert_eq!(proj.test_activity.lint, 0);
+        assert_eq!(proj.test_activity.ok, 1);
+        assert_eq!(proj.test_activity.failed, 0);
+        assert_eq!(proj.test_activity.no_result, 1);
+        assert_eq!(proj.test_activity.total(), 2);
+        // Overall totals mirror the single project.
+        assert_eq!(report.totals.test_activity.test, 1);
+        assert_eq!(report.totals.test_activity.no_result, 1);
+
+        // The facts surface in the markdown, factually.
+        let md = to_markdown(&report);
+        assert!(md.contains("Test-like commands recorded: 2 (test 1, build 1, lint 0)"));
+        assert!(md.contains("1 ok, 0 failed, 1 no-result"));
+    }
+
+    #[test]
+    fn no_test_activity_renders_zero() {
+        let report = digest_all(&[input("s", NOW, vec![bash(NOW, "ls", "/w/proj")])]);
+        assert_eq!(project(&report, "proj").test_activity.total(), 0);
+        assert!(to_markdown(&report).contains("Test-like commands recorded: 0"));
     }
 
     // --- duration ---------------------------------------------------------

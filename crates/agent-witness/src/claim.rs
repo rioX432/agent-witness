@@ -21,7 +21,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::testcmd::classify_command;
-use crate::timeline::{TimelineEntry, ToolStatus};
+use crate::timeline::{build_timeline, TimelineEntry, ToolStatus};
 
 /// `tool_input` field naming a shell command (Bash).
 const FIELD_COMMAND: &str = "command";
@@ -107,6 +107,14 @@ pub fn build_claim_vs_reality(
         test_files,
         cues,
     })
+}
+
+/// The recorded test/build/lint commands and their observed status for a session,
+/// built straight from its events. Exposed so cross-session consumers (the
+/// `digest`, issue #64) can tally the same facts the per-session panel shows,
+/// without duplicating the classify-and-pair logic.
+pub fn test_command_runs(events: &[AgentEvent]) -> Vec<TestCommandRun> {
+    collect_test_commands(&build_timeline(events))
 }
 
 /// The last `Stop` event's `last_assistant_message`, if any is a non-empty string.
@@ -280,8 +288,6 @@ mod tests {
     use super::*;
     use agent_witness_core::{Source, CONFIDENCE_CERTAIN};
     use serde_json::json;
-
-    use crate::timeline::build_timeline;
 
     fn ev(ts: i64, kind: EventKind, payload: Value) -> AgentEvent {
         AgentEvent::new(
