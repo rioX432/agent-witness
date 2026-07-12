@@ -84,6 +84,10 @@ struct LsArgs {
     /// within the recency window).
     #[arg(long)]
     live: bool,
+    /// Include sessions with no tool activity (hidden by default; a footer
+    /// discloses how many were hidden).
+    #[arg(long)]
+    all: bool,
     /// Liveness recency window in seconds (a session idle longer than this is
     /// not "live").
     #[arg(long, default_value_t = DEFAULT_WINDOW_SECS)]
@@ -259,7 +263,7 @@ async fn main() -> Result<()> {
                 let live = ls::only_live(rows);
                 print!("{}", ls::render_live_table(&live, total));
             } else {
-                print!("{}", ls::render_table(&rows));
+                print!("{}", ls::render_default(&rows, args.all));
             }
         }
         Command::Show(args) => {
