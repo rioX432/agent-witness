@@ -6,6 +6,7 @@
 
 mod backup;
 
+pub mod claim;
 pub mod digest;
 pub mod emit;
 pub mod flags;
@@ -18,6 +19,7 @@ pub mod report;
 pub mod skill;
 pub mod statusline;
 pub mod terminal;
+pub mod testcmd;
 pub mod timefmt;
 pub mod timeline;
 pub mod top;

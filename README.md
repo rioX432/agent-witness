@@ -166,6 +166,30 @@ and evadable:
 - Quoting, heredocs, aliases, and obfuscation can evade it. This is not a
   security boundary and makes no "we catch everything" claim (see SECURITY.md).
 
+## Claim vs reality: `report`'s final-message panel
+
+When the agent ends with "done — tests pass", `report` puts that verbatim final
+message beside the recorded execution facts, so you can check the claim against
+the record:
+
+- the agent's **final message**, shown verbatim (the last `Stop` hook's
+  `last_assistant_message`);
+- **test/build/lint commands** that were recorded, each with its observed status
+  (`ok` / `failed` / `no-result`);
+- a count of **unpaired calls** (`no-result`) — a failed Bash fires no completion
+  hook, so these are surfaced as *outcome not observed*, never as a failure;
+- **test files** written or edited (by path heuristic);
+- neutral **notes** that point at a tension without judging it — e.g. "the final
+  message mentions tests, but no test-like command was recorded."
+
+**It shows the record; it does not judge the claim (deliberately).** The section
+never says the message is false, contradicted, or that the agent lied — that
+verdict would be exactly the overclaim the whole tool refuses (ADR-0002). Success
+recorded with no evidence is not the same as failure. The panel is a filtered
+few-line slice, not the raw timeline; reading the contrast is yours, and triage at
+scale belongs to a future agent layer, never the CLI. Design:
+[ADR-0005](docs/adr/0005-claim-vs-reality-verification.md).
+
 ## Capability inventory: configured vs used
 
 `inventory` accounts for your agent's **attack surface**: what MCP servers and

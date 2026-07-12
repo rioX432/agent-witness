@@ -12,6 +12,18 @@ _Observation only — records what Claude Code hooks reported. See the scope not
 - Events: 7
 - Corrupt lines: 0
 
+## Final message vs recorded evidence
+
+_The agent's final message beside the facts the record holds. This section states what was recorded — it never judges whether the message is true; that is yours to read._
+
+**Final message**
+
+> 完了しました。`hello.rs` を作成し(`main` で `Hello` を出力)、コンパイラは `rustc 1.92.0` (Homebrew) が入っていることを確認しました。
+
+**Test-like commands recorded**
+
+_None recorded._
+
 ## Touched files
 
 _From `tool_input.file_path`; attribution noted._
