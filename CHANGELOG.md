@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-07-12
+
+The claim-vs-reality release: put the agent's final "done — tests pass" next to
+what the record shows actually ran, so you can check the claim instead of taking
+it on trust. Claim-aware presentation, never a verdict — the record shows what
+ran; the judgment stays yours (ADR-0005).
+
+### Added
+- `report` gains a **"Final message vs recorded evidence"** section: the agent's verbatim final message (the last `Stop` hook's `last_assistant_message`) beside the recorded execution facts — test/build/lint commands with their observed status (`ok` / `failed` / `no-result`), a count of unpaired calls, and test files written/edited — plus neutral cues that point at a tension (e.g. "the final message mentions tests, but no test-like command was recorded") without ever judging it. It never says the claim is false or that the agent lied, and a `no-result` is an unpaired call whose outcome was not observed, never a failure. No new capture — it reads events already recorded (ADR-0005, #63)
+- `digest` aggregates the same **test/build/lint command facts** across sessions, per project and overall: counts by kind with their observed-status roll-up (`ok` / `failed` / `no-result`). Facts only, on the existing digest footing — no pass-rate or efficiency verdict, and a `no-result` is never upgraded into a failure (#64)
+
+### Changed
+- README lead repositioned onto claim-vs-reality verification and the delegation ledger (keeping the honest-observation identity front and center); crate and repository descriptions realigned to match (#51)
+
 ## [0.0.5] - 2026-07-12
 
 The retrospective-usage release: turn the record into an answer to "what did my
