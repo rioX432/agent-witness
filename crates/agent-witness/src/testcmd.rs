@@ -59,7 +59,14 @@ impl TestKind {
 pub fn classify_command(command: &str) -> Option<TestKind> {
     let mut best: Option<TestKind> = None;
     for tokens in segments(command) {
-        let Some((&leading, args)) = tokens.split_first() else {
+        // Skip leading `NAME=value` env-assignments so classification anchors on
+        // the command word (`RUST_LOG=debug cargo test` → `cargo test`), not the
+        // assignment (issue #68).
+        let start = tokens
+            .iter()
+            .position(|t| !is_env_assignment(t))
+            .unwrap_or(tokens.len());
+        let Some((&leading, args)) = tokens[start..].split_first() else {
             continue;
         };
         if let Some(kind) = classify_segment(leading, args) {
@@ -70,6 +77,22 @@ pub fn classify_command(command: &str) -> Option<TestKind> {
         }
     }
     best
+}
+
+/// Whether a token is a leading shell env-assignment (`NAME=value`) that precedes
+/// the command word, as in `RUST_LOG=debug cargo test`. The name must be a shell
+/// identifier (starts with a letter/`_`, then alphanumerics/`_`), so only genuine
+/// assignments are skipped. Applied to leading tokens only, so a real argument
+/// like `dd`'s `of=/dev/sda` elsewhere is never affected.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty()
+                && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
 }
 
 /// Split a command into segments on `&&`, `||`, `;`, `|`, and newlines, returning
@@ -267,6 +290,39 @@ mod tests {
     fn quoted_or_echoed_command_does_not_classify() {
         // Leading token is `echo`, so the inner text is not anchored.
         assert_eq!(classify_command("echo \"cargo test\""), None);
+    }
+
+    #[test]
+    fn leading_env_assignments_are_skipped_before_anchoring() {
+        // The regression from dogfooding: env-prefixed test runners (issue #68).
+        assert_eq!(
+            classify_command("UPDATE_GOLDEN=1 cargo nextest run"),
+            Some(TestKind::Test)
+        );
+        assert_eq!(
+            classify_command("RUST_LOG=debug cargo test"),
+            Some(TestKind::Test)
+        );
+        assert_eq!(classify_command("CI=1 npm test"), Some(TestKind::Test));
+        // Multiple assignments, and the kind still comes from the real command.
+        assert_eq!(
+            classify_command("FOO=1 BAR=2 cargo build"),
+            Some(TestKind::Build)
+        );
+        // Env prefix inside a later segment of a chain.
+        assert_eq!(
+            classify_command("cd crates && RUSTFLAGS=-D cargo test"),
+            Some(TestKind::Test)
+        );
+    }
+
+    #[test]
+    fn a_bare_env_assignment_is_not_a_command() {
+        // No command word after the assignment(s) → nothing to classify.
+        assert_eq!(classify_command("FOO=bar"), None);
+        assert_eq!(classify_command("FOO=1 BAR=2"), None);
+        // The echo protection still holds even with an env prefix.
+        assert_eq!(classify_command("DEBUG=1 echo \"cargo test\""), None);
     }
 
     #[test]
