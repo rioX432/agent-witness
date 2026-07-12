@@ -4,9 +4,21 @@
 [![Release](https://img.shields.io/github/v/release/rioX432/agent-witness)](https://github.com/rioX432/agent-witness/releases)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
-> A session recorder and audit log for AI coding agents.
+> The audit trail for AI coding agents — check what the agent *actually did*, not just what it *said* it did.
 
-`agent-witness init` → use Claude Code as usual → `agent-witness show` replays what the session actually did (tool calls, files, commands) as a TUI timeline, backed by a persistent JSONL audit trail.
+Your agent reports "done — tests pass, refactor complete." `agent-witness` records
+what the session actually did — every tool call, command, and its `ok` / `failed` /
+`no-result` outcome — so you can check that claim against the record instead of taking
+it on trust. And `digest` rolls every session into a per-project **delegation ledger**
+with token totals, so you can see where your agent time and quota actually went.
+
+`agent-witness init`, use Claude Code as usual, then `agent-witness report` for a
+shareable audit of one session, or `agent-witness digest` for the ledger across all of
+them. `agent-witness show` replays any session as a TUI timeline.
+
+**We record what we saw, not what we guess** — every event is labeled
+`direct | observed | inferred`. Observation only: not a sandbox, not a security
+boundary (see SECURITY.md).
 
 **Status**: pre-v0.1, building in public. Not launched yet — interfaces and scope will change until v0.1.
 
