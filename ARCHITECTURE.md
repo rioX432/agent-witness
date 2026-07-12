@@ -65,6 +65,8 @@ crates/
     src/top.rs          # htop-like resident view of live sessions
     src/pick.rs         # interactive session picker (show --pick)
     src/report.rs       # SessionExporter trait + Markdown/JSON exporters
+    src/claim.rs        # claim-vs-reality panel: final message beside recorded facts (ADR-0005)
+    src/testcmd.rs      # pure test/build/lint command classifier (flags.rs-style)
 tests/fixtures/       # sanitized real-session hook/transcript JSONL (golden inputs)
 tools/fixtures/       # capture.sh + sanitize.py + checklist (fixture pipeline)
 docs/adr/             # architecture decision records

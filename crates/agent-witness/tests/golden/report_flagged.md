@@ -19,6 +19,18 @@ _Flags the command **class** as destructive — no claim about intent, outcome, 
 - **[critical]** recursive force-remove targeting a home or root path — `rm -rf ~/`
 - **[warning]** force-push rewrites remote history — `git push --force origin main`
 
+## Final message vs recorded evidence
+
+_The agent's final message beside the facts the record holds. This section states what was recorded — it never judges whether the message is true; that is yours to read._
+
+**Final message**
+
+> Force-pushed the branch and reset the environment as requested.
+
+**Test-like commands recorded**
+
+_None recorded._
+
 ## Touched files
 
 _From `tool_input.file_path`; attribution noted._

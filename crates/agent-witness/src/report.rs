@@ -22,6 +22,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::claim::{build_claim_vs_reality, ClaimVsReality};
 use crate::flags::{flags_for_command, Flag};
 use crate::timefmt::{format_duration_ms, format_offset_ms, format_utc};
 use crate::timeline::{build_timeline, tool_call_count, TimelineEntry};
@@ -53,6 +54,10 @@ pub struct SessionReport {
     /// should see these before anything else). Class-only, never intent — see
     /// [`crate::flags`]. Empty when nothing matched.
     pub flags: Vec<Flag>,
+    /// The agent's final message beside the recorded execution facts (ADR-0005).
+    /// `None` when there is nothing to contrast (no final message, no test-like
+    /// activity). Claim-aware presentation only — never a truth verdict.
+    pub claim_vs_reality: Option<ClaimVsReality>,
     /// Distinct files named by tool `file_path` inputs, in first-seen order.
     pub touched_files: Vec<TouchedFile>,
     /// Shell commands observed via Bash `tool_input.command`, in order.
@@ -148,6 +153,7 @@ pub fn build_report(
     let touched_files = collect_touched_files(&entries);
     let commands = collect_commands(&entries);
     let flags = collect_flags(&commands);
+    let claim_vs_reality = build_claim_vs_reality(&read.events, &entries);
     let timeline = collect_timeline(&entries, base_ts);
 
     let summary = Summary {
@@ -166,6 +172,7 @@ pub fn build_report(
         session_id: session_id.to_string(),
         summary,
         flags,
+        claim_vs_reality,
         touched_files,
         commands,
         timeline,
@@ -341,6 +348,7 @@ fn render_markdown(report: &SessionReport) -> String {
 
     render_summary(&mut out, &report.summary);
     render_flags(&mut out, &report.flags);
+    render_claim_vs_reality(&mut out, &report.claim_vs_reality);
     render_touched_files(&mut out, &report.touched_files);
     render_commands(&mut out, &report.commands);
     render_timeline(&mut out, &report.timeline);
@@ -400,6 +408,83 @@ fn render_flags(out: &mut String, flags: &[Flag]) {
         );
     }
     push_line(out, "");
+}
+
+/// Render the claim-vs-reality section (ADR-0005). Emitted only when present.
+/// Claim-aware presentation: the verbatim final message beside recorded facts,
+/// with neutral cues — never a verdict. The honesty framing is stated inline.
+fn render_claim_vs_reality(out: &mut String, claim: &Option<ClaimVsReality>) {
+    let Some(claim) = claim else {
+        return;
+    };
+    push_line(out, "## Final message vs recorded evidence");
+    push_line(out, "");
+    push_line(
+        out,
+        "_The agent's final message beside the facts the record holds. This section \
+         states what was recorded — it never judges whether the message is true; \
+         that is yours to read._",
+    );
+    push_line(out, "");
+
+    push_line(out, "**Final message**");
+    push_line(out, "");
+    match &claim.final_message {
+        Some(message) => {
+            // Blockquote verbatim, line by line, so multi-line prose stays intact.
+            for line in message.lines() {
+                push_line(out, &format!("> {line}"));
+            }
+        }
+        None => push_line(out, "_No final assistant message was recorded._"),
+    }
+    push_line(out, "");
+
+    push_line(out, "**Test-like commands recorded**");
+    push_line(out, "");
+    if claim.test_commands.is_empty() {
+        push_line(out, "_None recorded._");
+    } else {
+        for cmd in &claim.test_commands {
+            push_line(
+                out,
+                &format!(
+                    "- `{}` — {}, {} ({})",
+                    cmd.command,
+                    cmd.kind,
+                    cmd.status,
+                    attribution_word(cmd.attribution),
+                ),
+            );
+        }
+    }
+    push_line(out, "");
+
+    if !claim.test_files.is_empty() {
+        push_line(out, "**Test files written / edited**");
+        push_line(out, "");
+        for file in &claim.test_files {
+            push_line(
+                out,
+                &format!(
+                    "- `{}` — {} ({})",
+                    file.path,
+                    file.tools.join(", "),
+                    attribution_word(file.attribution),
+                ),
+            );
+        }
+        push_line(out, "");
+    }
+
+    if !claim.cues.is_empty() {
+        push_line(out, "**Notes**");
+        push_line(out, "");
+        for cue in &claim.cues {
+            push_line(out, &format!("- {cue}"));
+        }
+        push_line(out, "");
+    }
 }
 
 fn render_touched_files(out: &mut String, files: &[TouchedFile]) {
@@ -703,5 +788,111 @@ mod tests {
         assert!(md.contains("_None observed._"));
         assert!(md.contains("_No events recorded._"));
         assert_eq!(report.summary.duration_ms, None);
+    }
+
+    #[test]
+    fn claim_vs_reality_section_shows_message_and_test_command() {
+        let events = vec![
+            ev(
+                1,
+                EventKind::ToolCall,
+                json!({"tool_name": "Bash", "tool_use_id": "t1",
+                       "tool_input": {"command": "cargo test --workspace"}}),
+            ),
+            ev(
+                2,
+                EventKind::ToolResult,
+                json!({"tool_name": "Bash", "tool_use_id": "t1"}),
+            ),
+            ev(
+                3,
+                EventKind::Stop,
+                json!({"last_assistant_message": "done, tests pass"}),
+            ),
+        ];
+        let report = build_report("s", &read_with(events, 0), None);
+        assert!(report.claim_vs_reality.is_some());
+        let md = MarkdownExporter.export(&report).unwrap();
+        assert!(md.contains("## Final message vs recorded evidence"));
+        // Verbatim final message, blockquoted.
+        assert!(md.contains("> done, tests pass"));
+        // The recorded test command and its kind/status.
+        assert!(md.contains("cargo test --workspace"));
+        assert!(md.contains("test, ok"));
+    }
+
+    #[test]
+    fn claim_vs_reality_omitted_when_nothing_to_contrast() {
+        let events = vec![
+            ev(
+                1,
+                EventKind::ToolCall,
+                json!({"tool_name": "Bash", "tool_use_id": "t1",
+                       "tool_input": {"command": "ls"}}),
+            ),
+            ev(
+                2,
+                EventKind::ToolResult,
+                json!({"tool_name": "Bash", "tool_use_id": "t1"}),
+            ),
+        ];
+        let report = build_report("s", &read_with(events, 0), None);
+        assert!(report.claim_vs_reality.is_none());
+        let md = MarkdownExporter.export(&report).unwrap();
+        assert!(!md.contains("Final message vs recorded evidence"));
+    }
+
+    /// Precision policy at the render level: with a clean verbatim message, the
+    /// tool-generated text must not introduce any adjudicating phrasing — even
+    /// though the message claims a pass while the test command has no result.
+    /// (The scan assumes the message itself is clean, since the agent's own words
+    /// are reproduced verbatim and are not the tool's claim.)
+    #[test]
+    fn claim_vs_reality_render_never_adjudicates() {
+        let events = vec![
+            ev(
+                1,
+                EventKind::ToolCall,
+                json!({"tool_name": "Bash", "tool_use_id": "t1",
+                       "tool_input": {"command": "cargo test"}}),
+            ), // no PostToolUse → no-result
+            ev(
+                2,
+                EventKind::Stop,
+                json!({"last_assistant_message": "All tests pass, build is green."}),
+            ),
+        ];
+        let report = build_report("s", &read_with(events, 0), None);
+        let md = MarkdownExporter.export(&report).unwrap();
+        let lower = md.to_ascii_lowercase();
+        for phrase in [
+            "lied",
+            "contradict",
+            "did not pass",
+            "dishonest",
+            "is false",
+        ] {
+            assert!(
+                !lower.contains(phrase),
+                "report must not adjudicate: {phrase:?}"
+            );
+        }
+        // It DOES surface the honest ambiguity instead: the command row shows the
+        // unpaired status, and a cue explains it without calling it a failure.
+        assert!(md.contains("no-result"));
+        assert!(md.contains("no completion hook"));
+    }
+
+    #[test]
+    fn claim_vs_reality_carried_in_json_too() {
+        let events = vec![ev(
+            1,
+            EventKind::Stop,
+            json!({"last_assistant_message": "done"}),
+        )];
+        let report = build_report("s", &read_with(events, 0), None);
+        let js = JsonExporter.export(&report).unwrap();
+        let parsed: Value = serde_json::from_str(&js).unwrap();
+        assert_eq!(parsed["claim_vs_reality"]["final_message"], json!("done"));
     }
 }

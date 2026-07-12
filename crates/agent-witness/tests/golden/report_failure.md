@@ -12,6 +12,27 @@ _Observation only — records what Claude Code hooks reported. See the scope not
 - Events: 6
 - Corrupt lines: 0
 
+## Final message vs recorded evidence
+
+_The agent's final message beside the facts the record holds. This section states what was recorded — it never judges whether the message is true; that is yours to read._
+
+**Final message**
+
+> 2つのステップを実行しました。結果は以下のとおりです。
+> 
+> - **ステップ1: `cat missing-config.toml` → 失敗**(exit code 1)。エラーは `No such file or directory (os error 2)` で、ファイルが存在しないため読み取れませんでした。
+> - **ステップ2: `ls -la` → 出力は空**でした。作業ディレクトリ(`.../scratchpad/capture/proj-failure`)にはファイルが1つもなく、`missing-config.toml` が存在しないことが確認できます。
+> 
+> 指示どおり、ファイルの作成やステップ1の再試行は行わず、ここで停止します。
+
+**Test-like commands recorded**
+
+_None recorded._
+
+**Notes**
+
+- 1 recorded tool call(s) have no result — a failed Bash fires no completion hook, so an unpaired call is not observed as success or failure.
+
 ## Touched files
 
 _From `tool_input.file_path`; attribution noted._
