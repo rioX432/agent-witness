@@ -236,6 +236,16 @@ impl ModelTokenTotals {
             .cache_read_input_tokens
             .saturating_add(usage.cache_read_input_tokens);
     }
+
+    /// Whether this model recorded no tokens at all. Such a row (e.g. Claude
+    /// Code's `<synthetic>` placeholder model) carries no information and is
+    /// omitted from the ledger — it is not usage (#71).
+    fn is_zero(&self) -> bool {
+        self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.cache_creation_input_tokens == 0
+            && self.cache_read_input_tokens == 0
+    }
 }
 
 /// One project's aggregated ledger for the window.
@@ -685,7 +695,14 @@ impl ProjectAcc {
     }
 
     fn finalize(self) -> ProjectDigest {
-        let models_used = self.per_model.keys().cloned().collect();
+        // Drop models that recorded no tokens (e.g. the `<synthetic>` placeholder
+        // model): a 0/0/0/0 row is not usage and only adds noise (#71).
+        let per_model: Vec<ModelTokenTotals> = self
+            .per_model
+            .into_values()
+            .filter(|m| !m.is_zero())
+            .collect();
+        let models_used = per_model.iter().map(|m| m.model.clone()).collect();
         ProjectDigest {
             name: self.name,
             path: self.path,
@@ -698,7 +715,7 @@ impl ProjectAcc {
             files_touched: self.files.len(),
             flags: self.flags,
             test_activity: self.test_activity,
-            per_model: self.per_model.into_values().collect(),
+            per_model,
             models_used,
             sessions_usage_unavailable: self.usage_unavailable,
             multi_cwd_sessions: self.multi_cwd,
@@ -721,6 +738,12 @@ fn overall_totals(
     global_files: &BTreeSet<String>,
     global_models: BTreeMap<String, ModelTokenTotals>,
 ) -> OverallTotals {
+    // Drop zero-token models (e.g. `<synthetic>`) from the global roll-up too, so
+    // markdown and JSON stay consistent with the per-project sections (#71).
+    let global_per_model: Vec<ModelTokenTotals> = global_models
+        .into_values()
+        .filter(|m| !m.is_zero())
+        .collect();
     let mut totals = OverallTotals {
         projects: projects.len(),
         sessions: 0,
@@ -731,8 +754,8 @@ fn overall_totals(
         files_touched: global_files.len(),
         flags: FlagCounts::default(),
         test_activity: TestActivity::default(),
-        per_model: Vec::new(),
-        models_used: global_models.keys().cloned().collect(),
+        models_used: global_per_model.iter().map(|m| m.model.clone()).collect(),
+        per_model: global_per_model,
     };
     for project in projects {
         totals.sessions += project.sessions;
@@ -744,7 +767,6 @@ fn overall_totals(
         totals.flags.warning += project.flags.warning;
         totals.test_activity.merge(&project.test_activity);
     }
-    totals.per_model = global_models.into_values().collect();
     totals
 }
 
@@ -1369,6 +1391,30 @@ mod tests {
         assert_eq!(proj.per_model.len(), 1);
         assert_eq!(proj.per_model[0].input_tokens, 15);
         assert_eq!(proj.per_model[0].output_tokens, 26);
+    }
+
+    #[test]
+    fn zero_token_model_is_excluded_from_totals() {
+        // A `<synthetic>` placeholder model with no tokens (as Claude Code emits)
+        // must not appear anywhere in the ledger (#71).
+        let synthetic = r#"{"type":"assistant","message":{"id":"z1","model":"<synthetic>","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}"#;
+        let real = r#"{"type":"assistant","message":{"id":"z2","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":100,"output_tokens":200}}}"#;
+        let usage =
+            agent_witness_core::aggregate_transcript_usage(&format!("{synthetic}\n{real}"), "s");
+        let session = SessionInput {
+            usage: Some(usage),
+            ..input("s", NOW, vec![hook_prompt(NOW, "/w/proj")])
+        };
+
+        let report = digest_all(&[session]);
+
+        let proj = project(&report, "proj");
+        // Only the real model survives; the zero-token row is dropped everywhere.
+        assert_eq!(proj.per_model.len(), 1);
+        assert_eq!(proj.per_model[0].model, "claude-opus-4-8");
+        assert!(!proj.models_used.iter().any(|m| m == "<synthetic>"));
+        assert_eq!(report.totals.per_model.len(), 1);
+        assert!(!to_markdown(&report).contains("<synthetic>"));
     }
 
     // --- flags ------------------------------------------------------------
