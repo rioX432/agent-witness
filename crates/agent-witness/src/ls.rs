@@ -44,10 +44,12 @@ const STATE_LIVE: &str = "live";
 /// State cell for an idle (started-and-idle, stopped, or stale) session.
 const STATE_IDLE: &str = "idle";
 
-/// Gather a summary row for every recorded session, sorted by id.
+/// Gather a summary row for every recorded session, most-recent-first.
 ///
 /// `now_ms` and `window_ms` are injected so the `live` verdict stays a pure
 /// function of recorded data and the recency window (determinism; issue #19).
+/// Rows are ordered by start time descending so the freshest session is on top;
+/// a stable id tie-break keeps the order deterministic (issue #72).
 pub fn collect_rows(store: &SessionStore, now_ms: i64, window_ms: i64) -> Result<Vec<LsRow>> {
     let mut rows = Vec::new();
     for id in store.list_sessions()? {
@@ -70,6 +72,14 @@ pub fn collect_rows(store: &SessionStore, now_ms: i64, window_ms: i64) -> Result
             corrupt: read.skipped_lines,
         });
     }
+    // Most-recent-first (by start), so the freshest session tops the list; a
+    // stable id tie-break keeps it deterministic. Sessions with no known start
+    // sort last (issue #72).
+    rows.sort_by(|a, b| {
+        b.started_ms
+            .cmp(&a.started_ms)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
     Ok(rows)
 }
 
@@ -267,5 +277,29 @@ mod tests {
         assert!(!live_of("stale-sess"));
 
         assert_eq!(only_live(rows).len(), 1);
+    }
+
+    #[test]
+    fn collect_rows_orders_most_recent_first_then_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        // Opened out of order; `created_ts` sets the start. Two share a start to
+        // exercise the id tie-break.
+        for (id, created) in [
+            ("bbb", CREATED + 2_000),
+            ("aaa", CREATED + 1_000),
+            ("ccc", CREATED + 3_000),
+            ("dup2", CREATED + 5_000),
+            ("dup1", CREATED + 5_000),
+        ] {
+            let mut w = store.open(id, created).unwrap();
+            w.append(&event(created, EventKind::SessionStart)).unwrap();
+            drop(w);
+        }
+
+        let rows = collect_rows(&store, NOW, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        // Newest start first; equal starts break by id ascending.
+        assert_eq!(ids, vec!["dup1", "dup2", "ccc", "bbb", "aaa"]);
     }
 }
