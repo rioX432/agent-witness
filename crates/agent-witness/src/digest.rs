@@ -838,7 +838,7 @@ fn render_totals(out: &mut String, totals: &OverallTotals) {
     push_line(
         out,
         &format!(
-            "- Duration (summed): {}",
+            "- Duration (summed wall-span): {}",
             format_duration_ms(totals.duration_ms)
         ),
     );
@@ -877,7 +877,7 @@ fn render_projects(out: &mut String, projects: &[ProjectDigest]) {
         push_line(
             out,
             &format!(
-                "- Duration (summed): {}",
+                "- Duration (summed wall-span): {}",
                 format_duration_ms(project.duration_ms)
             ),
         );
@@ -1034,6 +1034,13 @@ fn render_scope(out: &mut String) {
         "- A session is included when its start falls inside the window; its whole \
          totals are counted. Usage sidecars are per-session and cannot be sliced \
          to a sub-window.",
+    );
+    push_line(
+        out,
+        "- Duration is each session's wall-span (first to last recorded event): it \
+         includes idle time between turns, and concurrent sessions' spans overlap, \
+         so the summed figure is span coverage, NOT additive time worked (it can \
+         exceed real elapsed time).",
     );
     push_line(out, "- All times are UTC.");
 }
@@ -1514,6 +1521,9 @@ mod tests {
         assert!(md.contains("Command flags by matcher severity"));
         assert!(md.contains("pattern-matcher hits"));
         assert!(md.contains("FACTS ONLY"));
+        // Duration is labelled and caveated as non-additive wall-span (#70).
+        assert!(md.contains("Duration (summed wall-span)"));
+        assert!(md.contains("NOT additive time worked"));
     }
 
     #[test]
