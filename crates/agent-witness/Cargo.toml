@@ -1,6 +1,6 @@
 [package]
 name = "agent-witness"
-version = "0.0.6"
+version = "0.0.7"
 description = "The audit trail for AI coding agents — check what a Claude Code session actually did, not just what it said"
 homepage = "https://github.com/rioX432/agent-witness"
 readme = "../../README.md"
@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-agent-witness-core = { path = "../witness-core", version = "0.0.6" }
+agent-witness-core = { path = "../witness-core", version = "0.0.7" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde = { workspace = true }
