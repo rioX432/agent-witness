@@ -28,6 +28,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::project::project_label;
 use crate::terminal::init as init_terminal;
 use crate::timefmt::format_duration_ms;
 use crate::timeline::{build_timeline, ToolStatus};
@@ -167,7 +168,7 @@ fn running_tool(events: &[AgentEvent]) -> Option<String> {
 /// Payload field carrying the working directory of a hook event.
 const FIELD_CWD: &str = "cwd";
 
-/// Project name = the basename of the cwd on the most recent event that carries
+/// Project name = the label of the cwd on the most recent event that carries
 /// one (not the last *first-seen* cwd — a session that revisits an earlier
 /// directory must be labelled with where it is now).
 fn project_name(events: &[AgentEvent]) -> String {
@@ -175,17 +176,8 @@ fn project_name(events: &[AgentEvent]) -> String {
         .iter()
         .rev()
         .find_map(|e| e.payload.get(FIELD_CWD).and_then(|v| v.as_str()))
-        .map(basename)
+        .map(project_label)
         .unwrap_or_else(|| ABSENT.to_string())
-}
-
-/// The last path component of `path`, or the path itself if it has none.
-fn basename(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| path.to_string())
 }
 
 /// Apply one key press to the view. Pure and terminal-independent.

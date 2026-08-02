@@ -42,6 +42,7 @@ use serde_json::Value;
 use crate::claim::test_command_runs;
 use crate::flags::{flags_for_command, FlagSeverity};
 use crate::inventory::parse_relative_ms;
+use crate::project::project_label;
 use crate::timefmt::{format_duration_ms, format_utc};
 
 /// Milliseconds per second.
@@ -251,7 +252,7 @@ impl ModelTokenTotals {
 /// One project's aggregated ledger for the window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectDigest {
-    /// Display name (the basename of the group's cwd path).
+    /// Display name (the project label of the group's cwd path).
     pub name: String,
     /// Full cwd path (the group key), or `"unknown project"`.
     pub path: String,
@@ -552,7 +553,7 @@ fn session_metrics(input: &SessionInput) -> SessionMetrics {
         }
     }
     let (project_key, project_name, is_unknown) = match cwds.first() {
-        Some(first) => (first.to_string(), basename(first), false),
+        Some(first) => (first.to_string(), project_label(first), false),
         None => (
             UNKNOWN_PROJECT.to_string(),
             UNKNOWN_PROJECT.to_string(),
@@ -786,15 +787,6 @@ fn tool_input_str<'a>(ev: &'a AgentEvent, key: &str) -> Option<&'a str> {
         .get(FIELD_TOOL_INPUT)
         .and_then(|input| input.get(key))
         .and_then(Value::as_str)
-}
-
-/// The last path component of `path`, or the path itself if it has none.
-fn basename(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| path.to_string())
 }
 
 // --- rendering ---------------------------------------------------------------
