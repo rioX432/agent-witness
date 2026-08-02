@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-08-02
+
+### Fixed
+- `top` and `digest` no longer label a session after an opaque worktree id. A cwd inside a Claude Code worktree (`<repo>/.claude/worktrees/<id>[/sub]`) is now labelled by the repository that owns the worktree, plus any sub-path below the worktree id (`viral-loc-monorepo/apps/nine`); plain paths keep their basename. Digest grouping is unchanged — the group key is still the session's first cwd
+
 ## [0.0.6] - 2026-07-12
 
 The claim-vs-reality release: put the agent's final "done — tests pass" next to
@@ -87,7 +92,9 @@ v0.1 feature set.
 - Workspace scaffold, `just verify` gate, CI mirroring the local gate, ADRs (5e26c33, 4e056ad)
 - Distribution via dist (cargo-dist): release CI on version tags, Homebrew tap, cargo-binstall metadata, shell installer (df46a90)
 
-[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/rioX432/agent-witness/compare/v0.0.6...v0.0.7
+[0.0.6]: https://github.com/rioX432/agent-witness/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/rioX432/agent-witness/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/rioX432/agent-witness/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/rioX432/agent-witness/compare/v0.0.2...v0.0.3
