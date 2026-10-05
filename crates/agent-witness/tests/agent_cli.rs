@@ -97,3 +97,35 @@ fn emit_cli_records_configured_identity_without_changing_raw_stdin() {
     assert!(!home.path().join(".claude").exists());
     assert!(!home.path().join(".codex").exists());
 }
+
+#[test]
+fn ls_json_exposes_inferred_waiting_state_and_age_without_tool_activity() {
+    use agent_witness_core::{Clock, FixedClock, Receiver, SystemClock};
+    let home = tempfile::TempDir::new().unwrap();
+    let store = SessionStore::new(home.path().join(".agent-witness/sessions"));
+    let mut receiver = Receiver::new(store);
+    const AGE_MS: i64 = 1_000;
+    let since = SystemClock.now_ms() - AGE_MS;
+    receiver.ingest(r#"{"session_id":"waiting","hook_event_name":"Notification","notification_type":"agent_needs_input","message":"private sentinel"}"#, &FixedClock(since)).unwrap();
+    let output = command(home.path())
+        .args(["ls", "--json", "--live"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["activity"]["state"], "waiting:input");
+    assert_eq!(rows[0]["activity"]["since_ms"], since);
+    assert!(rows[0]["activity"]["age_ms"].as_i64().unwrap() >= AGE_MS);
+    assert_eq!(rows[0]["activity"]["attribution"], "inferred");
+    assert_eq!(rows[0]["tools"], 0);
+    let table = command(home.path()).arg("ls").output().unwrap();
+    assert!(table.status.success());
+    let table = String::from_utf8(table.stdout).unwrap();
+    assert!(table.contains("waiting:input"));
+    assert!(table.contains("inferred"));
+}

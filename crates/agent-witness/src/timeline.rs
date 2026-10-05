@@ -210,6 +210,10 @@ fn meta_tag(kind: EventKind) -> String {
         EventKind::Stop => "STOP",
         EventKind::SessionEnd => "END",
         EventKind::Error => "ERROR",
+        EventKind::Notification => "NOTIFICATION",
+        EventKind::PermissionRequest => "PERMISSION REQUEST",
+        EventKind::PermissionDenied => "AUTO DENIAL",
+        EventKind::Interrupt => "INTERRUPT",
         // Tool kinds are handled before this is reached.
         EventKind::ToolCall | EventKind::ToolResult | EventKind::ToolFailure => "TOOL",
     }

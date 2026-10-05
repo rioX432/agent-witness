@@ -20,8 +20,8 @@
 use std::time::Duration;
 
 use agent_witness_core::{
-    session_agent, summarize, AgentEvent, AgentIdentity, Clock, SessionRead, SessionStore,
-    SessionSummary,
+    session_agent, summarize, Activity, ActivityState, AgentEvent, AgentIdentity, Clock,
+    SessionRead, SessionStore, SessionSummary, DEFAULT_LIVE_WINDOW_MS,
 };
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -61,6 +61,7 @@ const AGE_WIDTH: usize = 9;
 const ELAPSED_WIDTH: usize = 9;
 /// Column width for the numeric event count.
 const COUNT_WIDTH: usize = 7;
+const STATE_WIDTH: usize = 18;
 
 /// One live session, projected for display. Pure data: every time-derived field
 /// is precomputed against the injected clock so rendering reads no wall-clock.
@@ -79,6 +80,7 @@ pub struct TopRow {
     pub elapsed_ms: Option<i64>,
     /// Total parsed events.
     pub events: usize,
+    pub activity: Activity,
 }
 
 /// All state the resident view renders from. Pure data: no handles, no clock.
@@ -146,17 +148,32 @@ pub fn collect_top_rows(store: &SessionStore, now_ms: i64, window_ms: i64) -> Re
     });
     Ok(live
         .into_iter()
-        .map(|(summary, read)| top_row_from(&summary, &read.events, now_ms))
+        .map(|(summary, read)| top_row_within(&summary, &read.events, now_ms, window_ms))
         .collect())
 }
 
 /// Project one live session summary + its events into a display row. Pure.
 pub fn top_row_from(summary: &SessionSummary, events: &[AgentEvent], now_ms: i64) -> TopRow {
+    top_row_within(summary, events, now_ms, DEFAULT_LIVE_WINDOW_MS)
+}
+
+fn top_row_within(
+    summary: &SessionSummary,
+    events: &[AgentEvent],
+    now_ms: i64,
+    window_ms: i64,
+) -> TopRow {
+    let activity = summary.activity_within(now_ms, window_ms);
     TopRow {
+        activity,
         agent: session_agent(events),
         session_id: summary.id.clone(),
         project: project_name(events),
-        running_tool: running_tool(events),
+        running_tool: if activity.state == ActivityState::Running {
+            running_tool(events)
+        } else {
+            None
+        },
         last_activity_age_ms: summary.last_event_ts.map(|ts| now_ms - ts),
         elapsed_ms: summary.started_ms().map(|ts| now_ms - ts),
         events: summary.event_count,
@@ -165,7 +182,21 @@ pub fn top_row_from(summary: &SessionSummary, events: &[AgentEvent], now_ms: i64
 
 /// The tool of the most recent unpaired `ToolCall` — what is running right now.
 fn running_tool(events: &[AgentEvent]) -> Option<String> {
-    build_timeline(events)
+    let after_signal = events
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event.kind,
+                agent_witness_core::EventKind::PermissionRequest
+                    | agent_witness_core::EventKind::PermissionDenied
+                    | agent_witness_core::EventKind::Interrupt
+                    | agent_witness_core::EventKind::Stop
+                    | agent_witness_core::EventKind::SessionEnd
+                    | agent_witness_core::EventKind::Notification
+            )
+        })
+        .map_or(0, |index| index + 1);
+    build_timeline(&events[after_signal..])
         .into_iter()
         .rev()
         .find(|e| e.tool_status == Some(ToolStatus::NoResult))
@@ -274,7 +305,9 @@ fn render_list(frame: &mut Frame, app: &TopApp, area: Rect) {
             } else {
                 Style::default()
             };
-            ListItem::new(Line::from(text)).style(style)
+            let age = row.activity.age_ms.map(format_duration_ms).unwrap_or_else(|| ABSENT.to_string());
+            let state = row.activity.state.label();
+            ListItem::new(vec![Line::from(text), Line::from(format!("  {state:<STATE_WIDTH$} {age} (inferred)"))]).style(style)
         })
         .collect();
 
@@ -414,7 +447,42 @@ mod tests {
             last_activity_age_ms: Some(1_000),
             elapsed_ms: Some(60_000),
             events: 3,
+            activity: Activity {
+                state: ActivityState::Running,
+                since_ms: Some(NOW),
+                age_ms: Some(1_000),
+                attribution: Attribution::Inferred,
+            },
         }
+    }
+
+    #[test]
+    fn waiting_survives_recency_window_and_has_no_claim_of_a_running_tool() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("waiting", CREATED).unwrap();
+        writer
+            .append(&ev(
+                CREATED,
+                EventKind::ToolCall,
+                json!({"tool_name":"Bash", "tool_use_id":"t1"}),
+            ))
+            .unwrap();
+        writer
+            .append(&ev(
+                CREATED + 1_000,
+                EventKind::PermissionRequest,
+                json!({"tool_name":"Bash"}),
+            ))
+            .unwrap();
+        drop(writer);
+        let now = CREATED + DEFAULT_LIVE_WINDOW_MS + 2_000;
+        let rows = collect_top_rows(&store, now, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].activity.state, ActivityState::WaitingPermission);
+        assert_eq!(rows[0].activity.since_ms, Some(CREATED + 1_000));
+        assert_eq!(rows[0].activity.age_ms, Some(now - CREATED - 1_000));
+        assert!(rows[0].running_tool.is_none());
     }
 
     #[test]
@@ -472,7 +540,7 @@ mod tests {
             ),
         ];
         let summary = summarize("s", Some(CREATED), &events);
-        let r = top_row_from(&summary, &events, NOW);
+        let r = top_row_from(&summary, &events, 4);
         assert_eq!(r.running_tool.as_deref(), Some("Bash"));
         assert_eq!(r.project, "proj");
         assert_eq!(r.events, 4);

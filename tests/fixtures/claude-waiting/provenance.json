@@ -1,0 +1,18 @@
+{
+  "scenario": "claude-waiting",
+  "provenance": "synthetic",
+  "description": "Doc-derived, hand-written waiting and permission signals; not recorded from a live session.",
+  "hook_payload_schema": 1,
+  "contract_source": "https://code.claude.com/docs/en/hooks",
+  "contract_verified_on": "2026-10-05",
+  "sanitized_by": "Hand-authored placeholders; verified by fixtures_lint.rs.",
+  "event_count": 5,
+  "event_sequence": [
+    "Notification",
+    "Notification",
+    "Notification",
+    "PermissionRequest",
+    "PermissionDenied"
+  ],
+  "notes": "Notification types permission_prompt, idle_prompt and agent_needs_input. PermissionRequest has no tool_use_id; no pairing is attempted. PermissionDenied is auto-mode only, not a manual decision. Text, commands and ids are synthetic, not observed."
+}

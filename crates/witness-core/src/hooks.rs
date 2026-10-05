@@ -149,6 +149,19 @@ pub fn normalize_with_agent(
             project(obj, &["last_assistant_message", "stop_hook_active"]),
         ),
         HOOK_SESSION_END => (EventKind::SessionEnd, project(obj, &["reason", "cwd"])),
+        "Notification" => (
+            EventKind::Notification,
+            project(obj, &["notification_type", "tool_name", "cwd"]),
+        ),
+        "PermissionRequest" => (
+            EventKind::PermissionRequest,
+            project(obj, &["tool_name", "cwd", "turn_id"]),
+        ),
+        "PermissionDenied" => (
+            EventKind::PermissionDenied,
+            project(obj, &["tool_name", "tool_use_id", "cwd"]),
+        ),
+        "Interrupt" => (EventKind::Interrupt, project(obj, &["turn_id", "cwd"])),
         other => return Err(NormalizeError::UnmappedHookEvent(other.to_string())),
     };
 
@@ -200,6 +213,43 @@ fn project(obj: &Map<String, Value>, keys: &[&str]) -> Value {
         }
     }
     Value::Object(out)
+}
+
+/// Keep only signal metadata in the source record, disclosing every omitted field.
+pub(crate) fn redact_signal(hook: &mut Value) -> Vec<String> {
+    if !matches!(
+        hook_event_name_of(hook),
+        Some("Notification" | "PermissionRequest" | "PermissionDenied" | "Interrupt")
+    ) {
+        return Vec::new();
+    }
+    let Some(obj) = hook.as_object_mut() else {
+        return Vec::new();
+    };
+    const SIGNAL_FIELDS: &[&str] = &[
+        "hook_event_name",
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "permission_mode",
+        "notification_type",
+        "tool_name",
+        "tool_use_id",
+        "turn_id",
+        "agent_id",
+        "agent_type",
+    ];
+    let mut omitted = Vec::new();
+    obj.retain(|key, _| {
+        if SIGNAL_FIELDS.contains(&key.as_str()) {
+            true
+        } else {
+            omitted.push(key.clone());
+            false
+        }
+    });
+    omitted.sort();
+    omitted
 }
 
 #[cfg(test)]
@@ -294,12 +344,10 @@ mod tests {
 
     #[test]
     fn unmapped_hook_event_is_reported() {
-        let hook = parse(r#"{"hook_event_name":"Notification","session_id":"s"}"#);
+        let hook = parse(r#"{"hook_event_name":"UnknownHook","session_id":"s"}"#);
         assert_eq!(
             normalize(&hook, TS, "r"),
-            Err(NormalizeError::UnmappedHookEvent(
-                "Notification".to_string()
-            ))
+            Err(NormalizeError::UnmappedHookEvent("UnknownHook".to_string()))
         );
     }
 

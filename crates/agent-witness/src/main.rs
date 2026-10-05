@@ -81,8 +81,10 @@ struct StatuslineArgs {
 /// Arguments for `agent-witness ls`.
 #[derive(Debug, Args)]
 struct LsArgs {
-    /// Show only sessions that are currently live (started, not stopped, active
-    /// within the recency window).
+    /// Emit session rows as JSON, including inferred state and its age.
+    #[arg(long)]
+    json: bool,
+    /// Show inferred active sessions: recent running activity or unresolved waits.
     #[arg(long)]
     live: bool,
     /// Include sessions with no tool activity (hidden by default; a footer
@@ -296,7 +298,10 @@ async fn main() -> Result<()> {
             let paths = paths::resolve()?;
             let store = SessionStore::new(&paths.sessions_root);
             let rows = ls::collect_rows(&store, SystemClock.now_ms(), window_ms(args.window))?;
-            if args.live {
+            if args.json {
+                let rows = if args.live { ls::only_live(rows) } else { rows };
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else if args.live {
                 let total = rows.len();
                 let live = ls::only_live(rows);
                 print!("{}", ls::render_live_table(&live, total));

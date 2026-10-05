@@ -33,6 +33,15 @@ It covers a non-zero Bash failure and an abort-shaped failure with
 `is_interrupt: true`; it is not a recording or a live cancellation test.
 The hand-written error string is preserved as text, never parsed for an exit code.
 
+`claude-waiting` and `codex-waiting` (issue #85) are **synthetic**,
+hand-written from the [Claude hooks reference](https://code.claude.com/docs/en/hooks)
+and [Codex hooks reference](https://learn.chatgpt.com/docs/hooks). The Claude
+fixture includes each requested notification type, PermissionRequest and
+PermissionDenied; the Codex fixture includes PermissionRequest and Interrupt.
+No real permission decision or live waiting behavior was captured. Text in
+these hook inputs is a privacy-test sentinel: ingestion keeps signal metadata
+only and discloses omitted source fields in `raw.jsonl`.
+
 ## Scenarios
 
 | Directory | Flow | Why it matters |

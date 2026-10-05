@@ -162,6 +162,14 @@ pub enum EventKind {
     /// Claude Code ever sends an explicit `PostToolUseFailure` hook; the
     /// unpaired-`ToolCall` signal is what the pipeline relies on now.
     ToolFailure,
+    /// The agent emitted a notification; text is omitted by default.
+    Notification,
+    /// A tool needs a permission decision, not evidence of that decision.
+    PermissionRequest,
+    /// Claude auto mode denied a tool; not a manual refusal.
+    PermissionDenied,
+    /// Codex reported an interrupted main-thread turn.
+    Interrupt,
     /// The agent stopped / a turn ended.
     Stop,
     /// The session terminated (Claude Code `SessionEnd`). Unlike [`Stop`],

@@ -6,19 +6,22 @@
 //! never hidden (ADR-0002).
 
 use crate::report::agent_label;
-use agent_witness_core::{session_agent, summarize, AgentIdentity, SessionStore};
+use agent_witness_core::{
+    session_agent, summarize, Activity, ActivityState, AgentIdentity, SessionStore,
+};
 use anyhow::Result;
 
 use crate::timefmt::{format_duration_ms, format_utc};
 
 /// A single session's summary row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LsRow {
     pub agent: Option<AgentIdentity>,
     /// Session id (directory name).
     pub session_id: String,
-    /// Whether the session is (inferred) still running — see `agent_witness_core::liveness`.
+    /// Whether the session is inferred active (running or waiting).
     pub live: bool,
+    pub activity: Activity,
     /// Start time (session `created_ts`, or the first event's time as a fallback).
     pub started_ms: Option<i64>,
     /// Total parsed events.
@@ -32,19 +35,23 @@ pub struct LsRow {
 }
 
 /// Column headers, in display order.
-const HEADERS: [&str; 8] = [
-    "SESSION", "AGENT", "STATE", "STARTED", "EVENTS", "TOOLS", "DURATION", "CORRUPT",
+const HEADERS: [&str; 9] = [
+    "SESSION",
+    "AGENT",
+    "STATE (inferred)",
+    "STATE AGE",
+    "STARTED",
+    "EVENTS",
+    "TOOLS",
+    "DURATION",
+    "CORRUPT",
 ];
 /// Number of table columns.
-const COLS: usize = 8;
+const COLS: usize = 9;
 /// Gap between columns.
 const COL_GAP: &str = "  ";
 /// Placeholder for an absent value.
 const ABSENT: &str = "-";
-/// State cell for a live session.
-const STATE_LIVE: &str = "live";
-/// State cell for an idle (started-and-idle, stopped, or stale) session.
-const STATE_IDLE: &str = "idle";
 
 /// Gather a summary row for every recorded session, most-recent-first.
 ///
@@ -68,6 +75,7 @@ pub fn collect_rows(store: &SessionStore, now_ms: i64, window_ms: i64) -> Result
             agent: session_agent(&read.events),
             session_id: id,
             live: summary.is_live_within(now_ms, window_ms),
+            activity: summary.activity_within(now_ms, window_ms),
             started_ms: summary.started_ms(),
             events: summary.event_count,
             tools: summary.tool_calls,
@@ -117,7 +125,11 @@ pub fn render_table(rows: &[LsRow]) -> String {
             [
                 r.session_id.clone(),
                 agent_label(&r.agent),
-                if r.live { STATE_LIVE } else { STATE_IDLE }.to_string(),
+                r.activity.state.label().to_string(),
+                r.activity
+                    .age_ms
+                    .map(format_duration_ms)
+                    .unwrap_or_else(|| ABSENT.into()),
                 r.started_ms
                     .map(format_utc)
                     .unwrap_or_else(|| ABSENT.into()),
@@ -154,7 +166,17 @@ pub fn render_default(rows: &[LsRow], show_all: bool) -> String {
     if show_all {
         return render_table(rows);
     }
-    let active: Vec<LsRow> = rows.iter().filter(|r| r.tools > 0).cloned().collect();
+    let active: Vec<LsRow> = rows
+        .iter()
+        .filter(|r| {
+            r.tools > 0
+                || matches!(
+                    r.activity.state,
+                    ActivityState::WaitingPermission | ActivityState::WaitingInput
+                )
+        })
+        .cloned()
+        .collect();
     let hidden = rows.len() - active.len();
 
     if active.is_empty() {
@@ -209,6 +231,16 @@ mod tests {
             )),
             session_id: id.into(),
             live,
+            activity: Activity {
+                state: if live {
+                    ActivityState::Running
+                } else {
+                    ActivityState::Idle
+                },
+                since_ms: Some(CREATED),
+                age_ms: Some(NOW - CREATED),
+                attribution: agent_witness_core::Attribution::Inferred,
+            },
             started_ms: Some(CREATED),
             events: 3,
             tools: 1,
@@ -230,6 +262,30 @@ mod tests {
     }
 
     #[test]
+    fn waiting_without_tool_activity_is_visible_with_age_and_inference() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("waiting", CREATED).unwrap();
+        writer
+            .append(&event(NOW - 1_000, EventKind::PermissionRequest))
+            .unwrap();
+        drop(writer);
+        let rows = collect_rows(&store, NOW, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        assert_eq!(rows[0].activity.state, ActivityState::WaitingPermission);
+        assert_eq!(rows[0].activity.age_ms, Some(1_000));
+        assert!(rows[0].live);
+        let text = render_default(&rows, false);
+        assert!(text.contains("waiting:permission"));
+        assert!(text.contains("inferred"));
+        let json = serde_json::to_value(&rows).unwrap();
+        assert_eq!(json[0]["activity"]["state"], "waiting:permission");
+        assert_eq!(json[0]["activity"]["since_ms"], NOW - 1_000);
+        assert_eq!(json[0]["activity"]["age_ms"], 1_000);
+        assert_eq!(json[0]["activity"]["attribution"], "inferred");
+        assert_eq!(only_live(rows).len(), 1);
+    }
+
+    #[test]
     fn empty_rows_render_a_friendly_hint() {
         let table = render_table(&[]);
         assert!(table.contains("No sessions recorded yet"));
@@ -245,7 +301,7 @@ mod tests {
         assert!(lines[0].contains("STATE"));
         assert!(lines[0].contains("CORRUPT"));
         assert!(lines[1].contains("sess-a"));
-        assert!(lines[1].contains("live"));
+        assert!(lines[1].contains("running"));
         assert!(lines[1].contains("2023-11-14 22:13:20Z"));
         assert!(lines[2].contains("sess-b"));
         assert!(lines[2].contains("idle"));
