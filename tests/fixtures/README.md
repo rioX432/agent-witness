@@ -21,6 +21,12 @@ a synthetic fixture as real — honest observation is the project's Core Value.
 "synthetic"` — the destructive `rm -rf ~/` class cannot be captured from a real
 session, so it is hand-authored to the same sanitized payload shape.
 
+`codex-completed` (issues #81/#82) is also **synthetic**, hand-authored from the
+[Codex hooks contract](https://learn.chatgpt.com/docs/hooks). Both a successful
+and a failing Bash have plain-string `PostToolUse` responses with no structured
+exit code. Their intended outcomes are scenario provenance, not hook evidence.
+The fixture includes no conversation text.
+
 ## Scenarios
 
 | Directory | Flow | Why it matters |
@@ -29,6 +35,7 @@ session, so it is hand-authored to the same sanitized payload shape.
 | `session-with-failure/` | A Bash call fails (missing file), a diagnostic succeeds | Failure path: a failed Bash call fires **no** PostToolUse (see below) |
 | `session-multiturn/` | Two turns in one session (turn 2 resumed via `--continue`): write then edit a file | Liveness canary (issue #23): a `Stop` at index 4 is followed by more events, proving `Stop` fires per-turn, not per-session |
 | `session-flagged/` | **Synthetic**: `git push --force` then `rm -rf ~/` | Destructive-command flagging (issue #48): report's flags section, severity-sorted (critical `rm -rf ~/` above warning force-push) |
+| `codex-completed/` | **Synthetic**: successful and failing `cargo test`, both with `PostToolUse` | Codex hooks establish completion, never success; both commands remain `completed` |
 
 ## Transcript fixture (issue #4)
 

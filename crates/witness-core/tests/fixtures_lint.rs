@@ -197,7 +197,7 @@ fn env_identity_tokens() -> Vec<String> {
 #[test]
 fn required_scenarios_present() {
     let names: Vec<String> = scenario_files().into_iter().map(|(n, _)| n).collect();
-    for required in ["session-basic", "session-with-failure"] {
+    for required in ["session-basic", "session-with-failure", "codex-completed"] {
         assert!(
             names.iter().any(|n| n == required),
             "missing required fixture scenario `{required}`; found {names:?}"
@@ -323,4 +323,39 @@ fn failure_fixture_has_unpaired_pretooluse() {
         unpaired >= 1,
         "expected at least one PreToolUse without a matching PostToolUse (a failed tool call)"
     );
+}
+
+#[test]
+fn codex_fixture_pairs_both_commands_without_structured_exit_status() {
+    let path = fixtures_root().join("codex-completed").join("hooks.jsonl");
+    let values: Vec<Value> = load_lines(&path)
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let calls: Vec<_> = values
+        .iter()
+        .filter(|value| value["hook_event_name"] == "PreToolUse")
+        .collect();
+    let results: Vec<_> = values
+        .iter()
+        .filter(|value| value["hook_event_name"] == "PostToolUse")
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(results.len(), calls.len());
+    for call in calls {
+        assert_eq!(call["tool_name"], "Bash");
+        let result = results
+            .iter()
+            .find(|result| result["tool_use_id"] == call["tool_use_id"])
+            .expect("both Bash calls have a result");
+        assert!(result["tool_response"].is_string());
+        assert!(result.get("exit_code").is_none());
+        assert!(result.get("status").is_none());
+        assert_eq!(result["tool_input"], call["tool_input"]);
+    }
+    let provenance: Value = serde_json::from_str(
+        &fs::read_to_string(path.parent().unwrap().join("provenance.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(provenance["provenance"], "synthetic");
 }

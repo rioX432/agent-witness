@@ -102,6 +102,16 @@ impl Receiver {
         raw_payload: &str,
         clock: &dyn Clock,
     ) -> Result<Ingested, IngestError> {
+        self.ingest_with_agent(raw_payload, clock, None)
+    }
+
+    /// Keep bridge identity outside the verbatim canonical hook bytes.
+    pub fn ingest_with_agent(
+        &mut self,
+        raw_payload: &str,
+        clock: &dyn Clock,
+        agent: Option<crate::AgentIdentity>,
+    ) -> Result<Ingested, IngestError> {
         let ts = clock.now_ms();
         let prepared = prepare(raw_payload);
 
@@ -114,9 +124,9 @@ impl Receiver {
         let seq = self.next_seq(&session)?;
         let raw_ref = format!("{RAW_REF_PREFIX}{seq}");
 
-        let event = match prepared {
+        let mut event = match prepared {
             Prepared::Normalize { value, .. } => {
-                match hooks::normalize(&value, ts, &raw_ref) {
+                match hooks::normalize_with_agent(&value, ts, &raw_ref, agent) {
                     Ok(ev) => ev,
                     // A well-formed object can still be unmappable (unknown hook
                     // event, missing hook_event_name): record it, don't drop it.
@@ -126,6 +136,8 @@ impl Receiver {
             Prepared::Error { reason, .. } => hooks::error_event(&session, ts, &raw_ref, &reason),
         };
 
+        event.agent = event.agent.or(agent);
+
         let raw_record = RawRecord {
             v: crate::event::SCHEMA_VERSION,
             ts,
@@ -134,7 +146,7 @@ impl Receiver {
             raw: raw_payload.to_string(),
         };
 
-        let mut writer = self.store.open(&session, ts)?;
+        let mut writer = self.store.open_with_agent(&session, ts, event.agent)?;
         writer.append_raw(&raw_record)?;
         writer.append(&event)?;
 
@@ -188,7 +200,9 @@ impl Receiver {
                         continue;
                     }
                 }
-                writer.append(event)?;
+                let mut event = event.clone();
+                event.agent = crate::session_agent(&existing.events);
+                writer.append(&event)?;
                 appended += 1;
             }
         }

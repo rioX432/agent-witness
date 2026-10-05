@@ -12,7 +12,8 @@ use agent_witness::skill::{self, SkillOutcome, SkillReport};
 use agent_witness::statusline::{self, StatuslineOutcome, StatuslineReport};
 use agent_witness::{digest, emit, inventory, ls, paths, pick, top, tui, watch};
 use agent_witness_core::{
-    collect_summaries, resolve, Clock, SessionStore, SystemClock, DEFAULT_LIVE_WINDOW_MS,
+    collect_summaries, resolve, AgentIdentity, AgentName, Clock, SessionStore, SystemClock,
+    DEFAULT_LIVE_WINDOW_MS,
 };
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -35,13 +36,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Register the Claude Code hooks that record this session and install the
-    /// /witness skill (or remove both with --remove). Edits settings.json
-    /// safely: idempotent, merge-preserving, and backed up before any change.
+    /// Register Claude Code hooks and the /witness skill, or Codex hooks with
+    /// --codex. Use --remove to uninstall. Configuration edits are idempotent,
+    /// merge-preserving, and backed up before any change.
     Init(InitArgs),
-    /// Claude Code hooks command: read one hook payload on stdin and record it
+    /// Agent hooks command: read one hook payload on stdin and record it
     /// (forwards to the `watch` daemon, or writes to the store if none is up).
-    Emit(TranscriptArgs),
+    Emit(EmitArgs),
     /// Run the unix socket server: receive hook payloads, normalize, and store.
     Watch(TranscriptArgs),
     /// List recorded sessions (state, start time, event/tool counts, duration).
@@ -167,7 +168,10 @@ struct ShowArgs {
 /// Arguments for `agent-witness init`.
 #[derive(Debug, Args)]
 struct InitArgs {
-    /// Edit ./.claude/settings.json instead of ~/.claude/settings.json.
+    /// Register Codex hooks in .codex/hooks.json.
+    #[arg(long)]
+    codex: bool,
+    /// Edit project-local configuration instead of home configuration.
     #[arg(long)]
     project: bool,
     /// Remove agent-witness hook entries, the /witness skill, and the
@@ -178,7 +182,32 @@ struct InitArgs {
     /// command is wrapped, not replaced: it keeps rendering ahead of the
     /// witness segment and `init --remove` restores it exactly.
     #[arg(long)]
+    #[arg(conflicts_with = "codex")]
     statusline: bool,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum Producer {
+    ClaudeCode,
+    Codex,
+}
+
+impl From<Producer> for AgentName {
+    fn from(value: Producer) -> Self {
+        match value {
+            Producer::ClaudeCode => Self::ClaudeCode,
+            Producer::Codex => Self::Codex,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+struct EmitArgs {
+    #[command(flatten)]
+    transcript: TranscriptArgs,
+    /// Configured hook producer; omission records unknown identity.
+    #[arg(long, value_enum)]
+    agent: Option<Producer>,
 }
 
 /// Flags shared by the recording commands controlling the transcript adapter.
@@ -196,6 +225,13 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Init(args) => {
+            if args.codex {
+                let path = init::resolve_codex_settings_path(args.project)?;
+                let report =
+                    init::run_init_for_agent(&path, args.remove, &SystemClock, AgentName::Codex)?;
+                report_init(&path, &report);
+                return Ok(());
+            }
             let path = init::resolve_settings_path(args.project)?;
             let report = init::run_init(&path, args.remove, &SystemClock)?;
             report_init(&path, &report);
@@ -232,11 +268,13 @@ async fn main() -> Result<()> {
             let paths = paths::resolve()?;
             let mut payload = String::new();
             tokio::io::stdin().read_to_string(&mut payload).await?;
-            emit::run_emit(
+            emit::run_emit_with_agent(
                 &paths.socket,
                 &paths.sessions_root,
                 payload,
-                !args.no_transcript,
+                !args.transcript.no_transcript,
+                args.agent
+                    .map(|name| AgentIdentity::configured(name.into())),
             )
             .await?;
         }

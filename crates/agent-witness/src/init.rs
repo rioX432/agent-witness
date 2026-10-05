@@ -1,4 +1,4 @@
-//! `agent-witness init`: safe, idempotent registration of the Claude Code hooks
+//! `agent-witness init`: safe, idempotent registration of agent hooks
 //! that drive `agent-witness emit`.
 //!
 //! Editing a user's `settings.json` is the one place we mutate state outside our
@@ -7,8 +7,8 @@
 //! - **Merge, never clobber.** Existing hooks — ours or the user's — are kept.
 //!   We parse the file as an untyped [`serde_json::Value`] so unknown fields are
 //!   preserved verbatim rather than dropped by a typed struct.
-//! - **Idempotent.** Our own entries are detected by the command containing
-//!   [`OWN_MARKER`]; a second `init` adds nothing.
+//! - **Idempotent.** Only command handlers invoking `agent-witness emit` belong
+//!   to us; references to that command in foreign handlers remain untouched.
 //! - **Backed up.** An existing file is copied to `settings.json.bak-<ts>`
 //!   before it is rewritten. The timestamp comes from an injected [`Clock`].
 //! - **Non-destructive on bad input.** A file that is not valid JSON (or not a
@@ -22,17 +22,16 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_witness_core::Clock;
+use agent_witness_core::{AgentName, Clock};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 
 use crate::{backup, paths};
 
-/// The hook command Claude Code runs; forwards one hook payload to `emit`.
-const EMIT_COMMAND: &str = "agent-witness emit";
-/// Substring identifying hook entries this tool owns. Any hook command
-/// containing it is treated as ours for idempotent install and clean `--remove`.
 const OWN_MARKER: &str = "agent-witness emit";
+const AGENT_FLAG: &str = "--agent";
+const EMIT_SUBCOMMAND: &str = "emit";
+const EXECUTABLE_NAME: &str = "agent-witness";
 
 /// Top-level key holding all hook configuration.
 const HOOKS_KEY: &str = "hooks";
@@ -53,6 +52,8 @@ const MATCH_ALL: &str = "*";
 const CLAUDE_DIR: &str = ".claude";
 /// Settings file name.
 const SETTINGS_FILE: &str = "settings.json";
+const CODEX_DIR: &str = ".codex";
+const CODEX_HOOKS_FILE: &str = "hooks.json";
 
 /// Hook events we register, paired with whether the event takes a tool matcher.
 ///
@@ -72,10 +73,17 @@ const MANAGED_HOOKS: &[(&str, bool)] = &[
     ("SessionEnd", false),
 ];
 
+const CODEX_ADDITIONAL_HOOKS: &[(&str, bool)] = &[
+    ("PermissionRequest", true),
+    ("SubagentStart", true),
+    ("SubagentStop", true),
+    ("Interrupt", false),
+];
+
 /// What `init` did — surfaced for the CLI report and asserted in tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitOutcome {
-    /// One or more hook entries were added.
+    /// One or more hook entries were added or upgraded.
     Installed,
     /// All our entries were already present; nothing changed.
     AlreadyInstalled,
@@ -97,12 +105,27 @@ pub struct InitReport {
 /// Resolve the settings file to edit: `~/.claude/settings.json`, or
 /// `./.claude/settings.json` when `project` is set.
 pub fn resolve_settings_path(project: bool) -> Result<PathBuf> {
+    resolve_agent_settings_path(project, AgentName::ClaudeCode)
+}
+
+pub fn resolve_codex_settings_path(project: bool) -> Result<PathBuf> {
+    resolve_agent_settings_path(project, AgentName::Codex)
+}
+
+fn resolve_agent_settings_path(project: bool, agent: AgentName) -> Result<PathBuf> {
     let base = if project {
         std::env::current_dir().context("cannot determine current directory")?
     } else {
         paths::home_dir()?
     };
-    Ok(base.join(CLAUDE_DIR).join(SETTINGS_FILE))
+    Ok(settings_path_in(&base, agent))
+}
+
+fn settings_path_in(base: &Path, agent: AgentName) -> PathBuf {
+    match agent {
+        AgentName::ClaudeCode => base.join(CLAUDE_DIR).join(SETTINGS_FILE),
+        AgentName::Codex => base.join(CODEX_DIR).join(CODEX_HOOKS_FILE),
+    }
 }
 
 /// Install (or, with `remove`, uninstall) our hook entries in `settings_path`.
@@ -111,6 +134,15 @@ pub fn resolve_settings_path(project: bool) -> Result<PathBuf> {
 /// actually changes. Aborts without modifying the file if it is not valid JSON
 /// or not a JSON object.
 pub fn run_init(settings_path: &Path, remove: bool, clock: &dyn Clock) -> Result<InitReport> {
+    run_init_for_agent(settings_path, remove, clock, AgentName::ClaudeCode)
+}
+
+pub fn run_init_for_agent(
+    settings_path: &Path,
+    remove: bool,
+    clock: &dyn Clock,
+    agent: AgentName,
+) -> Result<InitReport> {
     let loaded = load_settings(settings_path)?;
 
     if remove {
@@ -135,7 +167,7 @@ pub fn run_init(settings_path: &Path, remove: bool, clock: &dyn Clock) -> Result
     }
 
     let mut root = loaded.unwrap_or_default();
-    if !install_entries(&mut root)? {
+    if !install_entries(&mut root, agent)? {
         return Ok(InitReport {
             outcome: InitOutcome::AlreadyInstalled,
             backup: None,
@@ -180,18 +212,37 @@ pub(crate) fn load_settings(path: &Path) -> Result<Option<Map<String, Value>>> {
 }
 
 /// Ensure each managed hook event carries our entry. Returns `true` if anything
-/// was added. Aborts if an existing `hooks` value or event array has the wrong
+/// changed. Aborts if an existing `hooks` value or event array has the wrong
 /// JSON shape (so we never clobber a user's unexpected structure).
-fn install_entries(root: &mut Map<String, Value>) -> Result<bool> {
+fn install_entries(root: &mut Map<String, Value>, agent: AgentName) -> Result<bool> {
     let hooks = hooks_object_mut(root)?;
     let mut changed = false;
-    for (event, use_matcher) in MANAGED_HOOKS {
+    let additional = match agent {
+        AgentName::ClaudeCode => &[][..],
+        AgentName::Codex => CODEX_ADDITIONAL_HOOKS,
+    };
+    for (event, use_matcher) in MANAGED_HOOKS.iter().chain(additional) {
         let array = event_array_mut(hooks, event)?;
-        if array.iter().any(group_contains_own_command) {
-            continue; // already registered — idempotent
+        let mut found = false;
+        for group in array.iter_mut() {
+            let Some(entries) = group.get_mut(GROUP_HOOKS_KEY).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for entry in entries.iter_mut().filter(|entry| hook_is_own(entry)) {
+                found = true;
+                if let Some(command) = entry.get(COMMAND_KEY).and_then(Value::as_str) {
+                    let upgraded = command_with_agent(command, agent);
+                    if upgraded != command {
+                        entry[COMMAND_KEY] = Value::String(upgraded);
+                        changed = true;
+                    }
+                }
+            }
         }
-        array.push(new_group(*use_matcher));
-        changed = true;
+        if !found {
+            array.push(new_group(*use_matcher, agent));
+            changed = true;
+        }
     }
     Ok(changed)
 }
@@ -253,8 +304,9 @@ fn event_array_mut<'a>(
 }
 
 /// Build a fresh matcher group registering our emit command.
-fn new_group(use_matcher: bool) -> Value {
-    let hook = json!({ TYPE_KEY: COMMAND_TYPE, COMMAND_KEY: EMIT_COMMAND });
+fn new_group(use_matcher: bool, agent: AgentName) -> Value {
+    let command = format!("{OWN_MARKER} {AGENT_FLAG} {}", agent.label());
+    let hook = json!({ TYPE_KEY: COMMAND_TYPE, COMMAND_KEY: command });
     if use_matcher {
         json!({ MATCHER_KEY: MATCH_ALL, GROUP_HOOKS_KEY: [hook] })
     } else {
@@ -263,6 +315,7 @@ fn new_group(use_matcher: bool) -> Value {
 }
 
 /// Whether a matcher group contains a hook command that is ours.
+#[cfg(test)]
 fn group_contains_own_command(group: &Value) -> bool {
     group
         .get(GROUP_HOOKS_KEY)
@@ -272,9 +325,56 @@ fn group_contains_own_command(group: &Value) -> bool {
 
 /// Whether a hook entry's command is one we installed.
 fn hook_is_own(hook: &Value) -> bool {
-    hook.get(COMMAND_KEY)
-        .and_then(Value::as_str)
-        .is_some_and(|command| command.contains(OWN_MARKER))
+    if hook.get(TYPE_KEY).and_then(Value::as_str) != Some(COMMAND_TYPE) {
+        return false;
+    }
+    let Some(command) = hook.get(COMMAND_KEY).and_then(Value::as_str) else {
+        return false;
+    };
+    let mut parts = command.split_whitespace();
+    let Some(executable) = parts.next() else {
+        return false;
+    };
+    Path::new(executable.trim_matches(['\'', '"']))
+        .file_name()
+        .is_some_and(|name| name == EXECUTABLE_NAME)
+        && parts.next() == Some(EMIT_SUBCOMMAND)
+}
+
+fn command_with_agent(command: &str, agent: AgentName) -> String {
+    let label = agent.label();
+    let mut parts = command.split_whitespace().scan(0, |cursor, part| {
+        let start = command[*cursor..].find(part)? + *cursor;
+        *cursor = start + part.len();
+        Some((start, *cursor, part))
+    });
+    parts.next();
+    let Some((_, emit_end, _)) = parts.next() else {
+        return command.to_string();
+    };
+    while let Some((start, end, part)) = parts.next() {
+        if part == AGENT_FLAG {
+            if let Some((value_start, value_end, _)) = parts.next() {
+                return format!(
+                    "{}{label}{}",
+                    &command[..value_start],
+                    &command[value_end..]
+                );
+            }
+        }
+        if part.starts_with(&format!("{AGENT_FLAG}=")) {
+            return format!(
+                "{}{AGENT_FLAG}={label}{}",
+                &command[..start],
+                &command[end..]
+            );
+        }
+    }
+    format!(
+        "{} {AGENT_FLAG} {label}{}",
+        &command[..emit_end],
+        &command[emit_end..]
+    )
 }
 
 /// Strip our hook entries from a group's `hooks` array. Returns `true` if any
@@ -370,7 +470,11 @@ mod tests {
         }
         for (event, _) in MANAGED_HOOKS {
             let command = &root["hooks"][*event][0]["hooks"][0]["command"];
-            assert_eq!(command, &json!(EMIT_COMMAND), "for {event}");
+            assert_eq!(
+                command,
+                &json!("agent-witness emit --agent claude-code"),
+                "for {event}"
+            );
         }
     }
 
@@ -643,5 +747,177 @@ mod tests {
     fn resolve_settings_path_project_ends_in_claude_settings() {
         let path = resolve_settings_path(true).unwrap();
         assert!(path.ends_with(Path::new(CLAUDE_DIR).join(SETTINGS_FILE)));
+    }
+
+    #[test]
+    fn codex_install_into_injected_home_registers_identity_and_lifecycle_events() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = settings_path_in(home.path(), AgentName::Codex);
+
+        let report = run_init_for_agent(&path, false, &clock(), AgentName::Codex).unwrap();
+
+        assert_eq!(report.outcome, InitOutcome::Installed);
+        assert!(report.backup.is_none());
+        assert_eq!(path, home.path().join(".codex/hooks.json"));
+        assert!(!home.path().join(CLAUDE_DIR).exists());
+        let root = read_json(&path);
+        assert_eq!(
+            root[HOOKS_KEY].as_object().unwrap().len(),
+            MANAGED_HOOKS.len() + CODEX_ADDITIONAL_HOOKS.len()
+        );
+        for (event, use_matcher) in MANAGED_HOOKS.iter().chain(CODEX_ADDITIONAL_HOOKS) {
+            let group = &root[HOOKS_KEY][*event][0];
+            assert_eq!(
+                group[GROUP_HOOKS_KEY][0][COMMAND_KEY],
+                json!("agent-witness emit --agent codex"),
+                "for {event}"
+            );
+            assert_eq!(group.get(MATCHER_KEY).is_some(), *use_matcher);
+        }
+    }
+
+    #[test]
+    fn codex_install_upgrades_handwritten_entry_in_place_and_preserves_foreign_fields() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = settings_path_in(home.path(), AgentName::Codex);
+        let foreign_hook = json!({
+            "type": "command", "command": "echo 'agent-witness emit'", "timeout": 10
+        });
+        let foreign_group = json!({
+            "matcher": "Edit", "hooks": [{"type": "command", "command": "audit-edits"}]
+        });
+        let original = json!({
+            "description": "custom hooks",
+            "hooks": {
+                "PostToolUse": [{
+                    "matcher": "Bash", "groupExtra": true,
+                    "hooks": [
+                        {"type": "command", "command": "agent-witness emit --socket /tmp/witness-test.sock", "timeout": 17, "statusMessage": "Recording"},
+                        foreign_hook.clone()
+                    ]
+                }, foreign_group.clone()],
+                "CustomEvent": [{"hooks": [foreign_hook.clone()]}]
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original_bytes = serde_json::to_vec_pretty(&original).unwrap();
+        std::fs::write(&path, &original_bytes).unwrap();
+
+        let report = run_init_for_agent(&path, false, &clock(), AgentName::Codex).unwrap();
+
+        assert_eq!(report.outcome, InitOutcome::Installed);
+        let backup = report.backup.unwrap();
+        assert_eq!(backup, crate::backup::backup_path(&path, TS));
+        assert_eq!(std::fs::read(backup).unwrap(), original_bytes);
+        let root = read_json(&path);
+        let groups = root[HOOKS_KEY]["PostToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0][MATCHER_KEY], "Bash");
+        assert_eq!(groups[0]["groupExtra"], true);
+        assert_eq!(
+            groups[0][GROUP_HOOKS_KEY][0][COMMAND_KEY],
+            "agent-witness emit --agent codex --socket /tmp/witness-test.sock"
+        );
+        assert_eq!(groups[0][GROUP_HOOKS_KEY][0]["timeout"], 17);
+        assert_eq!(groups[0][GROUP_HOOKS_KEY][0]["statusMessage"], "Recording");
+        assert_eq!(groups[0][GROUP_HOOKS_KEY][1], foreign_hook);
+        assert_eq!(groups[1], foreign_group);
+        assert_eq!(root["description"], original["description"]);
+        assert_eq!(
+            root[HOOKS_KEY]["CustomEvent"],
+            original[HOOKS_KEY]["CustomEvent"]
+        );
+        for (event, _) in MANAGED_HOOKS.iter().chain(CODEX_ADDITIONAL_HOOKS) {
+            assert_eq!(own_group_count(&root, event), 1, "for {event}");
+        }
+    }
+
+    #[test]
+    fn codex_second_install_changes_neither_file_nor_backup() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = settings_path_in(home.path(), AgentName::Codex);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}\n").unwrap();
+        let first = run_init_for_agent(&path, false, &clock(), AgentName::Codex).unwrap();
+        let first_bytes = std::fs::read(&path).unwrap();
+        let backup_path = first.backup.unwrap();
+        let backup_bytes = std::fs::read(&backup_path).unwrap();
+
+        let second =
+            run_init_for_agent(&path, false, &FixedClock(TS + 1), AgentName::Codex).unwrap();
+
+        assert_eq!(second.outcome, InitOutcome::AlreadyInstalled);
+        assert!(second.backup.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), first_bytes);
+        assert_eq!(std::fs::read(&backup_path).unwrap(), backup_bytes);
+        assert!(!crate::backup::backup_path(&path, TS + 1).exists());
+    }
+
+    #[test]
+    fn codex_remove_preserves_foreign_handlers_even_when_they_mention_emit() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = settings_path_in(home.path(), AgentName::Codex);
+        let original = json!({
+            "description": "keep this",
+            "hooks": {"PermissionRequest": [{"matcher": "Bash", "hooks": [
+                {"type": "command", "command": "agent-witness emit"},
+                {"type": "command", "command": "echo 'agent-witness emit'"}
+            ]}]}
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        run_init_for_agent(&path, false, &clock(), AgentName::Codex).unwrap();
+        let before_remove = std::fs::read(&path).unwrap();
+
+        let removed =
+            run_init_for_agent(&path, true, &FixedClock(TS + 1), AgentName::Codex).unwrap();
+
+        assert_eq!(removed.outcome, InitOutcome::Removed);
+        assert_eq!(
+            std::fs::read(removed.backup.unwrap()).unwrap(),
+            before_remove
+        );
+        assert_eq!(
+            read_json(&path),
+            json!({
+                "description": "keep this",
+                "hooks": {"PermissionRequest": [{"matcher": "Bash", "hooks": [
+                    {"type": "command", "command": "echo 'agent-witness emit'"}
+                ]}]}
+            })
+        );
+        let again = run_init_for_agent(&path, true, &clock(), AgentName::Codex).unwrap();
+        assert_eq!(again.outcome, InitOutcome::NothingToRemove);
+        assert!(again.backup.is_none());
+    }
+
+    #[test]
+    fn configured_agent_upgrade_preserves_existing_command_options_and_spacing() {
+        for (command, expected) in [
+            (
+                "  agent-witness   emit --agent   claude-code --socket /tmp/test.sock",
+                "  agent-witness   emit --agent   codex --socket /tmp/test.sock",
+            ),
+            (
+                "agent-witness emit --agent=claude-code",
+                "agent-witness emit --agent=codex",
+            ),
+            (
+                "/tmp/emit/agent-witness emit --socket /tmp/test.sock",
+                "/tmp/emit/agent-witness emit --agent codex --socket /tmp/test.sock",
+            ),
+            (
+                "agent-witness emit --agent codex",
+                "agent-witness emit --agent codex",
+            ),
+        ] {
+            assert_eq!(command_with_agent(command, AgentName::Codex), expected);
+        }
+    }
+
+    #[test]
+    fn resolve_codex_settings_path_project_ends_in_codex_hooks() {
+        let path = resolve_codex_settings_path(true).unwrap();
+        assert!(path.ends_with(Path::new(CODEX_DIR).join(CODEX_HOOKS_FILE)));
     }
 }

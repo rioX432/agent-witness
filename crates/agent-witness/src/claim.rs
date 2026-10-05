@@ -16,10 +16,11 @@
 //! tension is in scope; the verdict is delegated to the reader (and, at scale, to
 //! a future agent layer — never the CLI).
 
-use agent_witness_core::{AgentEvent, Attribution, EventKind};
+use agent_witness_core::{AgentEvent, AgentIdentity, Attribution, EventKind};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::report::is_configured_claude;
 use crate::testcmd::classify_command;
 use crate::timeline::{build_timeline, TimelineEntry, ToolStatus};
 
@@ -55,11 +56,12 @@ pub struct ClaimVsReality {
 /// A recorded test-like command and its observed outcome.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestCommandRun {
+    pub agent: Option<AgentIdentity>,
     /// The command line, flattened to one physical line.
     pub command: String,
     /// `test` / `build` / `lint` (see [`crate::testcmd`]).
     pub kind: &'static str,
-    /// Observed status: `ok` / `failed` / `no-result` — the same labels the
+    /// Observed status: `ok` / `failed` / `completed` / `no-result` — the same labels the
     /// timeline uses; `no-result` is never called a failure.
     pub status: &'static str,
     /// Attribution of the call (ADR-0002).
@@ -98,7 +100,16 @@ pub fn build_claim_vs_reality(
         return None;
     }
 
-    let cues = build_cues(final_message.as_deref(), &test_commands, no_result_calls);
+    let claude_contract = entries
+        .iter()
+        .filter(|entry| entry.tool_status == Some(ToolStatus::NoResult))
+        .all(|entry| is_configured_claude(&entry.agent));
+    let cues = build_cues(
+        final_message.as_deref(),
+        &test_commands,
+        no_result_calls,
+        claude_contract,
+    );
 
     Some(ClaimVsReality {
         final_message,
@@ -143,11 +154,12 @@ fn collect_test_commands(entries: &[TimelineEntry]) -> Vec<TestCommandRun> {
             let command = tool_input_str(&entry.call, FIELD_COMMAND)?;
             let kind = classify_command(command)?;
             Some(TestCommandRun {
+                agent: entry.agent,
                 command: one_line(command),
                 kind: kind.label(),
                 status: entry
                     .tool_status
-                    .map(ToolStatus::label)
+                    .map(ToolStatus::json_label)
                     .unwrap_or("no-result"),
                 attribution: entry.attribution,
             })
@@ -195,6 +207,7 @@ fn build_cues(
     final_message: Option<&str>,
     test_commands: &[TestCommandRun],
     no_result_calls: usize,
+    claude_contract: bool,
 ) -> Vec<String> {
     let mut cues = Vec::new();
 
@@ -224,10 +237,13 @@ fn build_cues(
 
     // Unpaired calls are ambiguous — stated as not-observed, never as failure.
     if no_result_calls > 0 {
+        let explanation = if claude_contract {
+            "a failed Bash fires no completion hook, so an unpaired call is not observed as success or failure."
+        } else {
+            "an unpaired call is not observed as success or failure."
+        };
         cues.push(format!(
-            "{no_result_calls} recorded tool call(s) have no result — a failed Bash \
-             fires no completion hook, so an unpaired call is not observed as \
-             success or failure."
+            "{no_result_calls} recorded tool call(s) have no result — {explanation}"
         ));
     }
 
@@ -286,11 +302,11 @@ fn one_line(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_witness_core::{Source, CONFIDENCE_CERTAIN};
+    use agent_witness_core::{AgentBasis, AgentName, Source, CONFIDENCE_CERTAIN};
     use serde_json::json;
 
     fn ev(ts: i64, kind: EventKind, payload: Value) -> AgentEvent {
-        AgentEvent::new(
+        let mut event = AgentEvent::new(
             ts,
             "s",
             Source::Hooks,
@@ -298,7 +314,12 @@ mod tests {
             Attribution::Direct,
             CONFIDENCE_CERTAIN,
             payload,
-        )
+        );
+        event.agent = Some(AgentIdentity {
+            name: AgentName::ClaudeCode,
+            basis: AgentBasis::Configured,
+        });
+        event
     }
 
     fn call(ts: i64, tool: &str, id: &str, input: Value) -> AgentEvent {
@@ -489,5 +510,32 @@ mod tests {
                 assert!(!lower.contains(word), "cue must not adjudicate: {cue:?}");
             }
         }
+    }
+    #[test]
+    fn codex_result_records_completion_without_success() {
+        let mut events = vec![
+            call(0, "Bash", "t", json!({"command":"cargo test"})),
+            result(1, "Bash", "t"),
+        ];
+        for event in &mut events {
+            event.agent = Some(AgentIdentity::configured(AgentName::Codex));
+        }
+        let panel = build(&events).unwrap();
+        assert_eq!(panel.test_commands[0].status, "completed");
+        assert_eq!(panel.no_result_calls, 0);
+        assert!(panel.cues.is_empty());
+        assert_eq!(
+            serde_json::to_value(panel).unwrap()["test_commands"][0]["status"],
+            "completed"
+        );
+    }
+    #[test]
+    fn codex_unpaired_cue_does_not_apply_the_claude_completion_contract() {
+        let mut event = call(0, "Bash", "t", json!({"command":"cargo test"}));
+        event.agent = Some(AgentIdentity::configured(AgentName::Codex));
+        let panel = build(&[event]).unwrap();
+        assert_eq!(panel.no_result_calls, 1);
+        assert!(panel.cues[0].contains("not observed as success or failure"));
+        assert!(!panel.cues[0].contains("fires no completion hook"));
     }
 }

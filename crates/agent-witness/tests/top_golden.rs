@@ -76,6 +76,9 @@ fn golden_path(name: &str) -> PathBuf {
 fn sample_rows() -> Vec<TopRow> {
     vec![
         TopRow {
+            agent: Some(agent_witness_core::AgentIdentity::configured(
+                agent_witness_core::AgentName::ClaudeCode,
+            )),
             session_id: "agent-witness".to_string(),
             project: "agent-witness".to_string(),
             running_tool: Some("Bash".to_string()),
@@ -84,6 +87,9 @@ fn sample_rows() -> Vec<TopRow> {
             events: 42,
         },
         TopRow {
+            agent: Some(agent_witness_core::AgentIdentity::configured(
+                agent_witness_core::AgentName::ClaudeCode,
+            )),
             session_id: "avvy-core-9f8c".to_string(),
             project: "avvy-core".to_string(),
             running_tool: Some("Edit".to_string()),
@@ -92,6 +98,9 @@ fn sample_rows() -> Vec<TopRow> {
             events: 9,
         },
         TopRow {
+            agent: Some(agent_witness_core::AgentIdentity::configured(
+                agent_witness_core::AgentName::ClaudeCode,
+            )),
             session_id: "idle-thinking".to_string(),
             project: "docs".to_string(),
             running_tool: None,

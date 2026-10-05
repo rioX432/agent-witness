@@ -73,6 +73,8 @@ pub struct SessionMeta {
     pub session_id: String,
     /// Session creation time, Unix epoch milliseconds. Supplied by the caller.
     pub created_ts: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<crate::AgentIdentity>,
 }
 
 /// A raw source record: one hook payload preserved verbatim (ADR-0001).
@@ -146,6 +148,16 @@ impl SessionStore {
     /// metadata, so this is idempotent. Returns a single-writer handle over the
     /// append-only event log.
     pub fn open(&self, session_id: &str, created_ts: i64) -> Result<SessionWriter, StoreError> {
+        self.open_with_agent(session_id, created_ts, None)
+    }
+
+    /// Index the producer on creation without rewriting existing records.
+    pub fn open_with_agent(
+        &self,
+        session_id: &str,
+        created_ts: i64,
+        agent: Option<crate::AgentIdentity>,
+    ) -> Result<SessionWriter, StoreError> {
         validate_session_id(session_id)?;
         let dir = self.session_dir(session_id);
         fs::create_dir_all(&dir).map_err(|e| StoreError::io(&dir, e))?;
@@ -156,6 +168,7 @@ impl SessionStore {
                 v: SCHEMA_VERSION,
                 session_id: session_id.to_string(),
                 created_ts,
+                agent,
             };
             let json = serde_json::to_string_pretty(&meta)?;
             fs::write(&meta_path, json).map_err(|e| StoreError::io(&meta_path, e))?;
@@ -189,7 +202,29 @@ impl SessionStore {
     pub fn read(&self, session_id: &str) -> Result<SessionRead, StoreError> {
         validate_session_id(session_id)?;
         let events_path = self.session_dir(session_id).join(EVENTS_FILE);
-        read_events_file(&events_path)
+        let mut read = read_events_file(&events_path)?;
+        if read.events.iter().any(|event| event.agent.is_none()) {
+            let raw = self.read_raw(session_id)?;
+            let hints: std::collections::HashMap<_, _> = raw
+                .records
+                .iter()
+                .filter_map(|record| {
+                    let hook: serde_json::Value = serde_json::from_str(&record.raw).ok()?;
+                    let identity = crate::hooks::transcript_path_of(&hook)
+                        .and_then(crate::infer_agent_from_transcript)?;
+                    Some((record.raw_ref.as_str(), identity))
+                })
+                .collect();
+            for event in &mut read.events {
+                if event.agent.is_none() {
+                    event.agent = event
+                        .raw_event_ref
+                        .as_deref()
+                        .and_then(|reference| hints.get(reference).copied());
+                }
+            }
+        }
+        Ok(read)
     }
 
     /// List the ids of all stored sessions, sorted ascending.
@@ -432,6 +467,7 @@ mod tests {
                 v: SCHEMA_VERSION,
                 session_id: "sess-a".to_string(),
                 created_ts: CREATED_TS,
+                agent: None,
             }
         );
     }
@@ -701,5 +737,60 @@ mod tests {
 
         let read = store.read("sess-e").unwrap();
         assert_eq!(read.events.len(), 2);
+    }
+    #[test]
+    fn legacy_raw_path_hint_is_exposed_without_rewriting_store_lines() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("legacy", CREATED_TS).unwrap();
+        let mut event = event("legacy", CREATED_TS, EventKind::ToolResult);
+        event.raw_event_ref = Some("raw-0".to_string());
+        writer.append(&event).unwrap();
+        writer
+            .append_raw(&RawRecord {
+                v: SCHEMA_VERSION,
+                ts: CREATED_TS,
+                session: "legacy".to_string(),
+                raw_ref: "raw-0".to_string(),
+                raw: r#"{"transcript_path":"/home/user/.codex/sessions/example.jsonl"}"#
+                    .to_string(),
+            })
+            .unwrap();
+        let before = fs::read(writer.events_path()).unwrap();
+        let read = store.read("legacy").unwrap();
+        assert_eq!(
+            read.events[0].agent,
+            Some(crate::AgentIdentity {
+                name: crate::AgentName::Codex,
+                basis: crate::AgentBasis::Inferred
+            })
+        );
+        assert_eq!(fs::read(writer.events_path()).unwrap(), before);
+        assert_eq!(store.read_meta("legacy").unwrap().agent, None);
+    }
+
+    #[test]
+    fn optional_meta_identity_is_compatible_with_legacy_metadata() {
+        let legacy = r#"{"v":1,"session_id":"legacy","created_ts":100}"#;
+        let meta: SessionMeta = serde_json::from_str(legacy).unwrap();
+        assert_eq!(meta.agent, None);
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let identity = crate::AgentIdentity::configured(crate::AgentName::Codex);
+        store
+            .open_with_agent("codex", CREATED_TS, Some(identity))
+            .unwrap();
+        assert_eq!(store.read_meta("codex").unwrap().agent, Some(identity));
+        #[derive(Deserialize)]
+        struct LegacyMeta {
+            v: u32,
+            session_id: String,
+            created_ts: i64,
+        }
+        let value = serde_json::to_string(&store.read_meta("codex").unwrap()).unwrap();
+        let old_reader: LegacyMeta = serde_json::from_str(&value).unwrap();
+        assert_eq!(old_reader.v, SCHEMA_VERSION);
+        assert_eq!(old_reader.session_id, "codex");
+        assert_eq!(old_reader.created_ts, CREATED_TS);
     }
 }

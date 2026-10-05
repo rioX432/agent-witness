@@ -33,7 +33,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use agent_witness_core::{
-    AgentEvent, EventKind, ModelUsage, SessionStore, SessionUsage, Source, StoreError,
+    session_agent, AgentEvent, AgentIdentity, EventKind, ModelUsage, SessionStore, SessionUsage,
+    Source, StoreError,
 };
 use anyhow::{anyhow, Result};
 use serde::Serialize;
@@ -43,6 +44,7 @@ use crate::claim::test_command_runs;
 use crate::flags::{flags_for_command, FlagSeverity};
 use crate::inventory::parse_relative_ms;
 use crate::project::project_label;
+use crate::report::{agent_label, is_configured_claude};
 use crate::timefmt::{format_duration_ms, format_utc};
 
 /// Milliseconds per second.
@@ -163,6 +165,7 @@ pub struct TestActivity {
     pub ok: usize,
     /// Of all test-like commands, those with a `failed` result.
     pub failed: usize,
+    pub completed: usize,
     /// Of all test-like commands, those with no paired result (outcome not
     /// observed — never counted as a failure).
     pub no_result: usize,
@@ -180,6 +183,7 @@ impl TestActivity {
         match status {
             "ok" => self.ok += 1,
             "failed" => self.failed += 1,
+            "completed" => self.completed += 1,
             "no-result" => self.no_result += 1,
             _ => {}
         }
@@ -192,6 +196,7 @@ impl TestActivity {
         self.lint += other.lint;
         self.ok += other.ok;
         self.failed += other.failed;
+        self.completed += other.completed;
         self.no_result += other.no_result;
     }
 
@@ -252,6 +257,7 @@ impl ModelTokenTotals {
 /// One project's aggregated ledger for the window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectDigest {
+    pub agent: Option<AgentIdentity>,
     /// Display name (the project label of the group's cwd path).
     pub name: String,
     /// Full cwd path (the group key), or `"unknown project"`.
@@ -432,7 +438,7 @@ pub fn build_digest(
     since_ms: Option<i64>,
     mode: WindowMode,
 ) -> DigestReport {
-    let mut projects: BTreeMap<ProjectKey, ProjectAcc> = BTreeMap::new();
+    let mut projects: BTreeMap<(ProjectKey, String), ProjectAcc> = BTreeMap::new();
     let mut global_files: BTreeSet<String> = BTreeSet::new();
     let mut global_models: BTreeMap<String, ModelTokenTotals> = BTreeMap::new();
     let mut honesty = HonestySurfaces {
@@ -472,8 +478,10 @@ pub fn build_digest(
             ProjectKey::Path(metrics.project_key.clone())
         };
         projects
-            .entry(key)
-            .or_insert_with(|| ProjectAcc::new(&metrics.project_name, &metrics.project_key))
+            .entry((key, agent_label(&metrics.agent)))
+            .or_insert_with(|| {
+                ProjectAcc::new(&metrics.project_name, &metrics.project_key, metrics.agent)
+            })
             .add(&metrics);
     }
 
@@ -507,6 +515,7 @@ enum ProjectKey {
 
 /// Per-session metrics, all derived purely from the session's inputs.
 struct SessionMetrics {
+    agent: Option<AgentIdentity>,
     project_key: String,
     project_name: String,
     is_unknown: bool,
@@ -618,6 +627,7 @@ fn session_metrics(input: &SessionInput) -> SessionMetrics {
     };
 
     SessionMetrics {
+        agent: session_agent(&input.events),
         project_key,
         project_name,
         is_unknown,
@@ -636,6 +646,7 @@ fn session_metrics(input: &SessionInput) -> SessionMetrics {
 
 /// One project's running accumulation.
 struct ProjectAcc {
+    agent: Option<AgentIdentity>,
     name: String,
     path: String,
     is_unknown: bool,
@@ -653,8 +664,9 @@ struct ProjectAcc {
 }
 
 impl ProjectAcc {
-    fn new(name: &str, path: &str) -> Self {
+    fn new(name: &str, path: &str, agent: Option<AgentIdentity>) -> Self {
         Self {
+            agent,
             name: name.to_string(),
             path: path.to_string(),
             is_unknown: path == UNKNOWN_PROJECT,
@@ -705,6 +717,7 @@ impl ProjectAcc {
             .collect();
         let models_used = per_model.iter().map(|m| m.model.clone()).collect();
         ProjectDigest {
+            agent: self.agent,
             name: self.name,
             path: self.path,
             is_unknown: self.is_unknown,
@@ -778,6 +791,7 @@ fn sort_projects(projects: &mut [ProjectDigest]) {
             .cmp(&b.is_unknown)
             .then_with(|| b.sessions.cmp(&a.sessions))
             .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| agent_label(&a.agent).cmp(&agent_label(&b.agent)))
     });
 }
 
@@ -887,6 +901,9 @@ fn render_projects(out: &mut String, projects: &[ProjectDigest]) {
     for project in projects {
         push_line(out, &format!("### {} (`{}`)", project.name, project.path));
         push_line(out, "");
+        if !is_configured_claude(&project.agent) {
+            push_line(out, &format!("- Agent: {}", agent_label(&project.agent)));
+        }
         push_line(out, &format!("- Sessions: {}", project.sessions));
         push_line(
             out,
@@ -951,9 +968,14 @@ fn test_activity_line(activity: &TestActivity) -> String {
     if activity.total() == 0 {
         return "Test-like commands recorded: 0".to_string();
     }
+    let completed = if activity.completed > 0 {
+        format!(", {} completed (exit unknown)", activity.completed)
+    } else {
+        String::new()
+    };
     format!(
         "Test-like commands recorded: {} (test {}, build {}, lint {}) — \
-         status: {} ok, {} failed, {} no-result",
+         status: {} ok, {} failed, {} no-result{completed}",
         activity.total(),
         activity.test,
         activity.build,
@@ -1068,7 +1090,7 @@ fn push_line(out: &mut String, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_witness_core::{Attribution, CONFIDENCE_CERTAIN};
+    use agent_witness_core::{AgentBasis, AgentName, Attribution, CONFIDENCE_CERTAIN};
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1079,7 +1101,7 @@ mod tests {
     // --- input builders ---------------------------------------------------
 
     fn event(ts: i64, source: Source, kind: EventKind, payload: Value) -> AgentEvent {
-        AgentEvent::new(
+        let mut event = AgentEvent::new(
             ts,
             "s",
             source,
@@ -1087,7 +1109,12 @@ mod tests {
             Attribution::Direct,
             CONFIDENCE_CERTAIN,
             payload,
-        )
+        );
+        event.agent = Some(AgentIdentity {
+            name: AgentName::ClaudeCode,
+            basis: AgentBasis::Configured,
+        });
+        event
     }
 
     fn hook_prompt(ts: i64, cwd: &str) -> AgentEvent {
@@ -1642,5 +1669,44 @@ mod tests {
         let report = build_digest(&inputs, NOW + 10, None, WindowMode::All);
         assert_eq!(project(&report, "proj").tool_calls, 1);
         assert_eq!(project(&report, "proj").per_model[0].input_tokens, 7);
+    }
+    #[test]
+    fn digest_groups_the_same_project_by_agent_and_counts_completion_separately() {
+        let claude = input("claude", NOW, vec![hook_prompt(NOW, "/w/proj")]);
+        let mut codex_events = vec![
+            bash(NOW, "cargo test", "/w/proj"),
+            event(
+                NOW + 1,
+                Source::Hooks,
+                EventKind::ToolResult,
+                json!({"tool_name":"Bash"}),
+            ),
+        ];
+        codex_events[0].payload["tool_use_id"] = json!("t");
+        codex_events[1].payload["tool_use_id"] = json!("t");
+        for event in &mut codex_events {
+            event.agent = Some(AgentIdentity::configured(AgentName::Codex));
+        }
+        let codex = input("codex", NOW, codex_events);
+        let mut unknown_events = vec![hook_prompt(NOW, "/w/proj")];
+        unknown_events[0].agent = None;
+        let report = digest_all(&[claude, codex, input("unknown", NOW, unknown_events)]);
+        assert_eq!(report.projects.len(), 3);
+        assert_eq!(report.totals.sessions, 3);
+        assert_eq!(report.totals.test_activity.completed, 1);
+        assert_eq!(report.totals.test_activity.ok, 0);
+        assert_eq!(report.totals.test_activity.failed, 0);
+        assert_eq!(report.totals.test_activity.no_result, 0);
+        let markdown = to_markdown(&report);
+        assert!(markdown.contains("1 completed (exit unknown)"));
+        assert!(markdown.contains("- Agent: codex"));
+        assert!(markdown.contains("- Agent: unknown"));
+        let json: Value = serde_json::from_str(&to_json(&report).unwrap()).unwrap();
+        assert_eq!(json["totals"]["test_activity"]["completed"], 1);
+        assert!(json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|project| project.get("agent").is_some()));
     }
 }

@@ -23,7 +23,7 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::emit::ACK_BYTE;
+use crate::emit::decode_message;
 
 /// Run the socket server until `shutdown` resolves.
 ///
@@ -92,15 +92,22 @@ async fn handle_connection(
         eprintln!("agent-witness watch: read error: {e}");
         return; // no ack -> emit falls back with the payload it still holds
     }
-    let payload = String::from_utf8_lossy(&bytes);
+    let message = String::from_utf8_lossy(&bytes);
+    let (payload, agent, ack) = match decode_message(&message) {
+        Ok(decoded) => decoded,
+        Err(e) => {
+            eprintln!("agent-witness watch: invalid bridge envelope: {e}");
+            return;
+        }
+    };
 
     // Hold the (non-async) ingest inline; no await while the receiver's
     // per-session state is mutated.
-    match receiver.ingest(&payload, clock) {
+    match receiver.ingest_with_agent(&payload, clock, agent) {
         Ok(_) => {
             // Persisted: confirm to the bridge. An ack write failure is fine —
             // emit falls back and the record is duplicated, never lost.
-            if let Err(e) = stream.write_all(&[ACK_BYTE]).await {
+            if let Err(e) = stream.write_all(&[ack]).await {
                 eprintln!("agent-witness watch: ack write error: {e}");
             }
             // Best-effort transcript supplement after the canonical hook is
