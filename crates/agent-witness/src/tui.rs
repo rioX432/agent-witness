@@ -17,7 +17,9 @@
 
 use std::time::Duration;
 
-use agent_witness_core::{Attribution, SessionRead, SessionStore, Source};
+use agent_witness_core::{
+    session_agent, AgentIdentity, Attribution, SessionRead, SessionStore, Source,
+};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -30,6 +32,8 @@ use serde_json::Value;
 use crate::terminal::init as init_terminal;
 use crate::timefmt::{format_duration_ms, format_offset_ms, format_utc};
 use crate::timeline::{build_timeline, tool_call_count, TimelineEntry};
+
+use crate::report::{agent_label, is_configured_claude};
 
 /// Header block height (2 content lines + top/bottom border).
 const HEADER_HEIGHT: u16 = 4;
@@ -51,6 +55,7 @@ const ABSENT: &str = "-";
 /// All state the timeline viewer renders from. Pure data: no handles, no clock.
 #[derive(Debug, Clone)]
 pub struct TuiApp {
+    pub agent: Option<AgentIdentity>,
     /// Session being viewed.
     pub session_id: String,
     /// Time of the first event, used as the base for relative offsets.
@@ -77,6 +82,7 @@ impl TuiApp {
     /// Build initial state from a session read.
     pub fn new(session_id: impl Into<String>, read: &SessionRead) -> Self {
         Self {
+            agent: session_agent(&read.events),
             session_id: session_id.into(),
             base_ts: read.events.first().map(|e| e.ts).unwrap_or(0),
             entries: build_timeline(&read.events),
@@ -94,6 +100,7 @@ impl TuiApp {
     /// when following and already at the tail, sticks to the newest row.
     pub fn update(&mut self, read: &SessionRead) {
         let was_at_tail = self.selected + 1 >= self.entries.len().max(1);
+        self.agent = session_agent(&read.events);
         self.entries = build_timeline(&read.events);
         if let Some(first) = read.events.first() {
             self.base_ts = first.ts;
@@ -181,8 +188,16 @@ fn render_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
         format_utc(app.base_ts)
     };
     let follow = if app.follow { "on" } else { "off" };
+    let agent = if is_configured_claude(&app.agent) {
+        String::new()
+    } else {
+        format!(" · agent {}", agent_label(&app.agent))
+    };
     let lines = vec![
-        Line::from(format!("session {}  ·  started {started}", app.session_id)),
+        Line::from(format!(
+            "session {}  ·  started {started}{agent}",
+            app.session_id
+        )),
         Line::from(format!(
             "{} events · {} tool calls · {} corrupt lines · follow {follow}",
             app.event_count, app.tool_count, app.skipped_lines
@@ -274,6 +289,9 @@ fn detail_text(entry: &TimelineEntry) -> String {
         source_word(entry.source),
         entry.call.confidence,
     ));
+    if !is_configured_claude(&entry.agent) {
+        out.push_str(&format!("agent: {}\n", agent_label(&entry.agent)));
+    }
     if let Some(raw_ref) = entry.call.raw_event_ref.as_deref() {
         out.push_str(&format!("raw_ref: {raw_ref}\n"));
     }
@@ -507,5 +525,18 @@ mod tests {
         // Log shrank (shouldn't normally happen, but must not panic): clamp.
         app.update(&read_with(vec![tool_call(1, "a")], 0));
         assert_eq!(app.selected, 0);
+    }
+    #[test]
+    fn detail_shows_completed_exit_unknown_and_inferred_agent() {
+        let mut call = tool_call(0, "t");
+        call.payload["transcript_path"] = serde_json::json!("~/.codex/sessions/fixture.jsonl");
+        call.agent = None;
+        let mut result = call.clone();
+        result.kind = EventKind::ToolResult;
+        result.ts = 1;
+        let app = TuiApp::new("s", &read_with(vec![call, result], 0));
+        let detail = detail_text(&app.entries[0]);
+        assert!(detail.contains("status: completed (exit unknown)"));
+        assert!(detail.contains("agent: codex (inferred)"));
     }
 }

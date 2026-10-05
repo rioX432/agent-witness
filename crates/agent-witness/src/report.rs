@@ -17,7 +17,10 @@
 //! (e.g. cursor/agent-trace, v0.2) slot in without touching the report builder.
 //! v0.1 ships exactly two exporters: [`MarkdownExporter`] and [`JsonExporter`].
 
-use agent_witness_core::{AgentEvent, Attribution, SessionRead, Source};
+use agent_witness_core::{
+    session_agent, AgentBasis, AgentEvent, AgentIdentity, AgentName, Attribution, SessionRead,
+    Source,
+};
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
@@ -30,7 +33,7 @@ use crate::timeline::{build_timeline, tool_call_count, TimelineEntry};
 /// Stable substring guaranteed to appear in every report's observation-scope
 /// disclaimer (markdown body and JSON `disclaimer` array alike). Tests assert on
 /// this so the honesty guarantee (ADR-0002) can never regress silently.
-pub const OBSERVATION_SCOPE_MARKER: &str = "records only what Claude Code hooks report";
+pub const OBSERVATION_SCOPE_MARKER: &str = "records only what";
 
 /// `tool_input` field naming the file a tool acted on.
 const FIELD_FILE_PATH: &str = "file_path";
@@ -40,12 +43,15 @@ const FIELD_COMMAND: &str = "command";
 const FIELD_TOOL_INPUT: &str = "tool_input";
 /// Placeholder for an absent scalar value.
 const ABSENT: &str = "-";
+const SCOPE_AGENT_LINE: usize = 0;
+const SCOPE_RESULT_LINE: usize = 2;
 
 /// A fully-built, format-independent session report. Serializes directly as the
 /// `--json` output, and is rendered to markdown by [`MarkdownExporter`]; both
 /// formats therefore carry exactly the same data.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SessionReport {
+    pub agent: Option<AgentIdentity>,
     /// Session id this report describes.
     pub session_id: String,
     /// Headline counts and timing.
@@ -103,10 +109,10 @@ pub struct TouchedFile {
 /// A shell command observed via a Bash tool call.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CommandRun {
+    pub agent: Option<AgentIdentity>,
     /// The command line, flattened to a single physical line for display.
     pub command: String,
-    /// Observed outcome: `ok`, `failed`, or `no-result` (an unpaired call — e.g.
-    /// a failed Bash, which fires no completion hook — is never called a success).
+    /// A reported result with an unknown exit status is `completed`, never `ok`.
     pub status: &'static str,
     /// Elapsed time if the completion hook reported one.
     pub duration_ms: Option<i64>,
@@ -117,6 +123,7 @@ pub struct CommandRun {
 /// One condensed timeline row (a call folded together with its result).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TimelineDigestEntry {
+    pub agent: Option<AgentIdentity>,
     /// Offset from the first event, milliseconds.
     pub offset_ms: i64,
     /// Attribution of the primary event (ADR-0002).
@@ -168,7 +175,17 @@ pub fn build_report(
         corrupt_lines: read.skipped_lines,
     };
 
+    let agent = session_agent(&read.events);
+    let scope_agent = if entries
+        .iter()
+        .all(|entry| is_configured_claude(&entry.agent))
+    {
+        agent
+    } else {
+        None
+    };
     SessionReport {
+        agent,
         session_id: session_id.to_string(),
         summary,
         flags,
@@ -176,7 +193,7 @@ pub fn build_report(
         touched_files,
         commands,
         timeline,
-        disclaimer: disclaimer_lines(read.skipped_lines),
+        disclaimer: agent_disclaimer(read.skipped_lines, &scope_agent),
     }
 }
 
@@ -211,8 +228,9 @@ fn collect_commands(entries: &[TimelineEntry]) -> Vec<CommandRun> {
         .filter_map(|entry| {
             let command = tool_input_str(&entry.call, FIELD_COMMAND)?;
             Some(CommandRun {
+                agent: entry.agent,
                 command: one_line(command),
-                status: entry.tool_status.map(|s| s.label()).unwrap_or(ABSENT),
+                status: entry.tool_status.map(|s| s.json_label()).unwrap_or(ABSENT),
                 duration_ms: entry.duration_ms,
                 attribution: entry.attribution,
             })
@@ -238,11 +256,12 @@ fn collect_timeline(entries: &[TimelineEntry], base_ts: i64) -> Vec<TimelineDige
     entries
         .iter()
         .map(|entry| TimelineDigestEntry {
+            agent: entry.agent,
             offset_ms: entry.ts - base_ts,
             attribution: entry.attribution,
             source: entry.source,
             tag: entry.tag.clone(),
-            status: entry.tool_status.map(|s| s.label()),
+            status: entry.tool_status.map(|s| s.json_label()),
             duration_ms: entry.duration_ms,
             summary: entry.summary.clone(),
         })
@@ -257,13 +276,48 @@ fn tool_input_str<'a>(ev: &'a AgentEvent, key: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
 }
 
+pub(crate) fn is_configured_claude(agent: &Option<AgentIdentity>) -> bool {
+    matches!(agent, Some(identity) if identity.name == AgentName::ClaudeCode && identity.basis == AgentBasis::Configured)
+}
+
+pub(crate) fn agent_label(agent: &Option<AgentIdentity>) -> String {
+    agent
+        .map(AgentIdentity::label)
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn agent_suffix(agent: &Option<AgentIdentity>) -> String {
+    if is_configured_claude(agent) {
+        String::new()
+    } else {
+        format!(" · agent {}", agent_label(agent))
+    }
+}
+
+pub(crate) fn human_status(status: &str) -> &str {
+    if status == "completed" {
+        "completed (exit unknown)"
+    } else {
+        status
+    }
+}
+
+fn agent_disclaimer(corrupt_lines: usize, agent: &Option<AgentIdentity>) -> Vec<String> {
+    let mut lines = disclaimer_lines(corrupt_lines);
+    if !is_configured_claude(agent) {
+        lines[SCOPE_AGENT_LINE] = "agent-witness records only what agent hooks report: tool calls and their inputs, not their side effects.".to_string();
+        lines[SCOPE_RESULT_LINE] = "A reported tool result is completed (exit unknown) unless the configured agent's hook contract establishes success; no-result means no result was observed.".to_string();
+    }
+    lines
+}
+
 /// The observation-scope disclaimer, one sentence per line. Always emitted so a
 /// report can never overclaim (ADR-0002); the trailing line reports how many
 /// corrupt lines were skipped.
 fn disclaimer_lines(corrupt_lines: usize) -> Vec<String> {
     vec![
         format!(
-            "agent-witness {OBSERVATION_SCOPE_MARKER}: tool calls and their \
+            "agent-witness {OBSERVATION_SCOPE_MARKER} Claude Code hooks report: tool calls and their \
              inputs, not their side effects."
         ),
         "A command run via Bash is recorded by its command line only; what it \
@@ -342,10 +396,21 @@ fn render_markdown(report: &SessionReport) -> String {
     push_line(&mut out, "");
     push_line(
         &mut out,
-        "_Observation only — records what Claude Code hooks reported. See the scope note at the end._",
+        if is_configured_claude(&report.agent) {
+            "_Observation only — records what Claude Code hooks reported. See the scope note at the end._"
+        } else {
+            "_Observation only — records what agent hooks reported. See the scope note at the end._"
+        },
     );
     push_line(&mut out, "");
 
+    if !is_configured_claude(&report.agent) {
+        push_line(
+            &mut out,
+            &format!("- Agent: {}", agent_label(&report.agent)),
+        );
+        push_line(&mut out, "");
+    }
     render_summary(&mut out, &report.summary);
     render_flags(&mut out, &report.flags);
     render_claim_vs_reality(&mut out, &report.claim_vs_reality);
@@ -449,11 +514,12 @@ fn render_claim_vs_reality(out: &mut String, claim: &Option<ClaimVsReality>) {
             push_line(
                 out,
                 &format!(
-                    "- `{}` — {}, {} ({})",
+                    "- `{}` — {}, {} ({}){}",
                     cmd.command,
                     cmd.kind,
-                    cmd.status,
+                    human_status(cmd.status),
                     attribution_word(cmd.attribution),
+                    agent_suffix(&cmd.agent),
                 ),
             );
         }
@@ -529,11 +595,12 @@ fn render_commands(out: &mut String, commands: &[CommandRun]) {
         push_line(
             out,
             &format!(
-                "- `{}` — {}{} ({})",
+                "- `{}` — {}{} ({}){}",
                 cmd.command,
-                cmd.status,
+                human_status(cmd.status),
                 duration,
                 attribution_word(cmd.attribution),
+                agent_suffix(&cmd.agent),
             ),
         );
     }
@@ -552,7 +619,7 @@ fn render_timeline(out: &mut String, timeline: &[TimelineDigestEntry]) {
         let offset = format_offset_ms(entry.offset_ms);
         let mut tag = entry.tag.clone();
         if let Some(status) = entry.status {
-            tag.push_str(&format!(" [{status}]"));
+            tag.push_str(&format!(" [{}]", human_status(status)));
             if let Some(duration) = entry.duration_ms {
                 tag.push_str(&format!(" ({})", format_duration_ms(duration)));
             }
@@ -565,8 +632,9 @@ fn render_timeline(out: &mut String, timeline: &[TimelineDigestEntry]) {
         push_line(
             out,
             &format!(
-                "- `{offset}` · {tag}{summary} · {}",
+                "- `{offset}` · {tag}{summary} · {}{}",
                 attribution_word(entry.attribution),
+                agent_suffix(&entry.agent),
             ),
         );
     }
@@ -594,7 +662,7 @@ mod tests {
     use serde_json::json;
 
     fn ev(ts: i64, kind: EventKind, payload: Value) -> AgentEvent {
-        AgentEvent::new(
+        let mut event = AgentEvent::new(
             ts,
             "s",
             Source::Hooks,
@@ -602,7 +670,12 @@ mod tests {
             Attribution::Direct,
             CONFIDENCE_CERTAIN,
             payload,
-        )
+        );
+        event.agent = Some(AgentIdentity {
+            name: AgentName::ClaudeCode,
+            basis: AgentBasis::Configured,
+        });
+        event
     }
 
     fn read_with(events: Vec<AgentEvent>, skipped: usize) -> SessionRead {
@@ -894,5 +967,111 @@ mod tests {
         let js = JsonExporter.export(&report).unwrap();
         let parsed: Value = serde_json::from_str(&js).unwrap();
         assert_eq!(parsed["claim_vs_reality"]["final_message"], json!("done"));
+    }
+    #[test]
+    fn completed_results_keep_unknown_exit_in_all_report_surfaces() {
+        for agent in [
+            Some(AgentIdentity::configured(AgentName::Codex)),
+            Some(AgentIdentity {
+                name: AgentName::Codex,
+                basis: AgentBasis::Inferred,
+            }),
+            None,
+        ] {
+            let mut call = ev(
+                0,
+                EventKind::ToolCall,
+                json!({"tool_name":"Bash", "tool_use_id":"t", "tool_input":{"command":"cargo test"}}),
+            );
+            let mut result = ev(
+                1,
+                EventKind::ToolResult,
+                json!({"tool_name":"Bash", "tool_use_id":"t", "tool_response":"response"}),
+            );
+            call.agent = agent;
+            result.agent = agent;
+            let report = build_report("s", &read_with(vec![call, result], 0), None);
+            assert_eq!(report.commands[0].status, "completed");
+            assert_eq!(report.timeline[0].status, Some("completed"));
+            assert_eq!(
+                report.claim_vs_reality.as_ref().unwrap().test_commands[0].status,
+                "completed"
+            );
+            let md = MarkdownExporter.export(&report).unwrap();
+            assert_eq!(md.matches("completed (exit unknown)").count(), 4);
+            assert!(md.contains(&format!("- Agent: {}", agent_label(&agent))));
+            assert!(!md.contains("records what Claude Code hooks reported"));
+            let json: Value = serde_json::from_str(&JsonExporter.export(&report).unwrap()).unwrap();
+            assert_eq!(json["commands"][0]["status"], "completed");
+            assert_eq!(json["timeline"][0]["status"], "completed");
+            assert_eq!(
+                json["claim_vs_reality"]["test_commands"][0]["status"],
+                "completed"
+            );
+            assert_eq!(json["agent"], serde_json::to_value(agent).unwrap());
+        }
+    }
+
+    #[test]
+    fn transcript_hint_is_shown_as_inferred_and_claude_identity_is_in_json() {
+        let mut call = ev(
+            0,
+            EventKind::ToolCall,
+            json!({"tool_name":"Bash", "tool_use_id":"t", "tool_input":{"command":"cargo test"}, "transcript_path":"~/.codex/sessions/fixture.jsonl"}),
+        );
+        let mut result = ev(
+            1,
+            EventKind::ToolResult,
+            json!({"tool_name":"Bash", "tool_use_id":"t"}),
+        );
+        call.agent = None;
+        result.agent = None;
+        let report = build_report("s", &read_with(vec![call, result], 0), None);
+        assert!(MarkdownExporter
+            .export(&report)
+            .unwrap()
+            .contains("codex (inferred)"));
+        assert_eq!(report.agent.unwrap().basis, AgentBasis::Inferred);
+        let claude = build_report(
+            "s",
+            &read_with(vec![ev(0, EventKind::Stop, json!({}))], 0),
+            None,
+        );
+        let json: Value = serde_json::from_str(&JsonExporter.export(&claude).unwrap()).unwrap();
+        assert_eq!(json["agent"]["name"], "claude-code");
+        assert_eq!(json["agent"]["basis"], "configured");
+    }
+    #[test]
+    fn mixed_legacy_and_configured_events_keep_scope_contract_neutral() {
+        let mut call = ev(
+            0,
+            EventKind::ToolCall,
+            json!({"tool_name":"Bash", "tool_use_id":"t", "tool_input":{"command":"cargo test"}}),
+        );
+        let mut result = ev(
+            1,
+            EventKind::ToolResult,
+            json!({"tool_name":"Bash", "tool_use_id":"t"}),
+        );
+        call.agent = None;
+        result.agent = None;
+        let report = build_report(
+            "s",
+            &read_with(vec![call, result, ev(2, EventKind::Stop, json!({}))], 0),
+            None,
+        );
+        assert_eq!(
+            report.agent,
+            Some(AgentIdentity::configured(AgentName::ClaudeCode))
+        );
+        assert_eq!(report.commands[0].status, "completed");
+        assert!(report
+            .disclaimer
+            .iter()
+            .any(|line| line.contains("exit unknown")));
+        assert!(!report
+            .disclaimer
+            .iter()
+            .any(|line| line.contains("fires no completion hook")));
     }
 }

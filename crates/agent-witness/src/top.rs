@@ -19,7 +19,10 @@
 
 use std::time::Duration;
 
-use agent_witness_core::{summarize, AgentEvent, Clock, SessionRead, SessionStore, SessionSummary};
+use agent_witness_core::{
+    session_agent, summarize, AgentEvent, AgentIdentity, Clock, SessionRead, SessionStore,
+    SessionSummary,
+};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -29,6 +32,7 @@ use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::project::project_label;
+use crate::report::{agent_label, is_configured_claude};
 use crate::terminal::init as init_terminal;
 use crate::timefmt::format_duration_ms;
 use crate::timeline::{build_timeline, ToolStatus};
@@ -46,6 +50,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_millis(1_000);
 const ABSENT: &str = "-";
 /// Column width for the (truncated) session id.
 const SESSION_WIDTH: usize = 14;
+const AGENT_WIDTH: usize = 21;
 /// Column width for the project name.
 const PROJECT_WIDTH: usize = 18;
 /// Column width for the currently-running tool.
@@ -61,6 +66,7 @@ const COUNT_WIDTH: usize = 7;
 /// is precomputed against the injected clock so rendering reads no wall-clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopRow {
+    pub agent: Option<AgentIdentity>,
     /// Session id (used for drilldown).
     pub session_id: String,
     /// Project name, derived from the session's most recent cwd.
@@ -147,6 +153,7 @@ pub fn collect_top_rows(store: &SessionStore, now_ms: i64, window_ms: i64) -> Re
 /// Project one live session summary + its events into a display row. Pure.
 pub fn top_row_from(summary: &SessionSummary, events: &[AgentEvent], now_ms: i64) -> TopRow {
     TopRow {
+        agent: session_agent(events),
         session_id: summary.id.clone(),
         project: project_name(events),
         running_tool: running_tool(events),
@@ -223,6 +230,7 @@ fn render_list(frame: &mut Frame, app: &TopApp, area: Rect) {
         return;
     }
 
+    let show_agent = app.rows.iter().any(|row| !is_configured_claude(&row.agent));
     let items: Vec<ListItem> = app
         .rows
         .iter()
@@ -255,6 +263,12 @@ fn render_list(frame: &mut Frame, app: &TopApp, area: Rect) {
                 ew = ELAPSED_WIDTH,
                 cw = COUNT_WIDTH,
             );
+            let text = if show_agent {
+                let agent = agent_label(&row.agent);
+                format!("{agent:<AGENT_WIDTH$} {text}")
+            } else {
+                text
+            };
             let style = if selected {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
@@ -391,6 +405,9 @@ mod tests {
 
     fn row(id: &str) -> TopRow {
         TopRow {
+            agent: Some(AgentIdentity::configured(
+                agent_witness_core::AgentName::ClaudeCode,
+            )),
             session_id: id.to_string(),
             project: "proj".to_string(),
             running_tool: None,
@@ -519,5 +536,42 @@ mod tests {
         assert_eq!(rows[0].session_id, "live-sess");
         assert_eq!(rows[0].project, "live");
         assert_eq!(rows[0].running_tool.as_deref(), Some("Bash"));
+    }
+    #[test]
+    fn codex_completed_command_is_not_shown_as_running_and_agent_is_visible() {
+        let mut events = vec![
+            ev(
+                NOW,
+                EventKind::ToolCall,
+                json!({"tool_name":"Bash", "tool_use_id":"t"}),
+            ),
+            ev(
+                NOW + 1,
+                EventKind::ToolResult,
+                json!({"tool_name":"Bash", "tool_use_id":"t"}),
+            ),
+        ];
+        for event in &mut events {
+            event.agent = Some(AgentIdentity::configured(
+                agent_witness_core::AgentName::Codex,
+            ));
+        }
+        let summary = summarize("s", Some(NOW), &events);
+        let row = top_row_from(&summary, &events, NOW + 1);
+        assert_eq!(row.running_tool, None);
+        assert_eq!(agent_label(&row.agent), "codex");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 10)).unwrap();
+        terminal
+            .draw(|frame| render_top(frame, &TopApp::new(vec![row.clone()])))
+            .unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("codex"));
     }
 }

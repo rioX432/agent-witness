@@ -1,0 +1,18 @@
+{
+  "scenario": "codex-completed",
+  "provenance": "synthetic",
+  "description": "Codex Bash hooks report a plain-string PostToolUse response for both a successful command and a non-zero command; neither response establishes an exit status.",
+  "hook_payload_schema": 1,
+  "contract_source": "https://learn.chatgpt.com/docs/hooks",
+  "sanitized_by": "Hand-authored with fixture placeholders; checked by fixtures_lint.rs",
+  "event_count": 6,
+  "event_sequence": [
+    "SessionStart",
+    "PreToolUse(Bash, cargo test --lib)",
+    "PostToolUse(Bash, cargo test --lib)",
+    "PreToolUse(Bash, cargo test --test missing_target)",
+    "PostToolUse(Bash, cargo test --test missing_target)",
+    "Stop"
+  ],
+  "notes": "Synthetic contract regression, not a real capture. Successful/failing intent is scenario provenance only: hook responses contain no structured exit code, so the recorder must classify both as completed, never infer success or failure from prose. No conversation text is included."
+}

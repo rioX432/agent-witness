@@ -5,7 +5,8 @@
 //! honesty surface here — corrupted/unparseable lines are counted and shown,
 //! never hidden (ADR-0002).
 
-use agent_witness_core::{summarize, SessionStore};
+use crate::report::agent_label;
+use agent_witness_core::{session_agent, summarize, AgentIdentity, SessionStore};
 use anyhow::Result;
 
 use crate::timefmt::{format_duration_ms, format_utc};
@@ -13,6 +14,7 @@ use crate::timefmt::{format_duration_ms, format_utc};
 /// A single session's summary row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LsRow {
+    pub agent: Option<AgentIdentity>,
     /// Session id (directory name).
     pub session_id: String,
     /// Whether the session is (inferred) still running — see `agent_witness_core::liveness`.
@@ -30,11 +32,11 @@ pub struct LsRow {
 }
 
 /// Column headers, in display order.
-const HEADERS: [&str; 7] = [
-    "SESSION", "STATE", "STARTED", "EVENTS", "TOOLS", "DURATION", "CORRUPT",
+const HEADERS: [&str; 8] = [
+    "SESSION", "AGENT", "STATE", "STARTED", "EVENTS", "TOOLS", "DURATION", "CORRUPT",
 ];
 /// Number of table columns.
-const COLS: usize = 7;
+const COLS: usize = 8;
 /// Gap between columns.
 const COL_GAP: &str = "  ";
 /// Placeholder for an absent value.
@@ -63,6 +65,7 @@ pub fn collect_rows(store: &SessionStore, now_ms: i64, window_ms: i64) -> Result
             _ => None,
         };
         rows.push(LsRow {
+            agent: session_agent(&read.events),
             session_id: id,
             live: summary.is_live_within(now_ms, window_ms),
             started_ms: summary.started_ms(),
@@ -113,6 +116,7 @@ pub fn render_table(rows: &[LsRow]) -> String {
         .map(|r| {
             [
                 r.session_id.clone(),
+                agent_label(&r.agent),
                 if r.live { STATE_LIVE } else { STATE_IDLE }.to_string(),
                 r.started_ms
                     .map(format_utc)
@@ -200,6 +204,9 @@ mod tests {
 
     fn row(id: &str, live: bool) -> LsRow {
         LsRow {
+            agent: Some(agent_witness_core::AgentIdentity::configured(
+                agent_witness_core::AgentName::ClaudeCode,
+            )),
             session_id: id.into(),
             live,
             started_ms: Some(CREATED),
@@ -378,5 +385,20 @@ mod tests {
         assert!(out.contains("2 recorded with none"));
         // There ARE sessions, so the `init` hint would be false (ADR-0002).
         assert!(!out.contains("agent-witness init"));
+    }
+    #[test]
+    fn table_shows_configured_inferred_and_unknown_agents() {
+        let mut codex = row("codex", false);
+        codex.agent = Some(AgentIdentity {
+            name: agent_witness_core::AgentName::Codex,
+            basis: agent_witness_core::AgentBasis::Inferred,
+        });
+        let mut unknown = row("old", false);
+        unknown.agent = None;
+        let output = render_table(&[row("claude", false), codex, unknown]);
+        assert!(output.contains("AGENT"));
+        assert!(output.contains("claude-code"));
+        assert!(output.contains("codex (inferred)"));
+        assert!(output.contains("unknown"));
     }
 }

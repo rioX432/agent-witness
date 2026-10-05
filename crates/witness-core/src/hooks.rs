@@ -1,4 +1,4 @@
-//! Normalizer: Claude Code hook payloads → the canonical [`AgentEvent`] model.
+//! Normalizer: agent hook payloads → the canonical [`AgentEvent`] model.
 //!
 //! This is a pure mapping. It reads no wall-clock and does no I/O: the caller
 //! supplies `ts` (inject a [`crate::Clock`]) and a `raw_ref` linking the event
@@ -6,7 +6,7 @@
 //! [`Attribution::Direct`] with full confidence (ADR-0002) — the agent reported
 //! them itself.
 //!
-//! Failure representation: a `Bash` tool call that exits non-zero fires **no**
+//! Claude Code failure representation: a `Bash` exiting non-zero fires **no**
 //! `PostToolUse` hook (empirically pinned by issue #8), so a failure shows up as
 //! a [`EventKind::ToolCall`] with no matching [`EventKind::ToolResult`]. The
 //! normalizer therefore never fabricates a failure from a single payload; it
@@ -15,7 +15,9 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::event::{AgentEvent, Attribution, EventKind, Source, CONFIDENCE_CERTAIN};
+use crate::event::{
+    AgentEvent, AgentIdentity, AgentName, Attribution, EventKind, Source, CONFIDENCE_CERTAIN,
+};
 
 /// Session id used when a payload cannot be attributed to a real session
 /// (malformed JSON, missing `session_id`). Kept as a single safe path component
@@ -82,12 +84,28 @@ pub fn transcript_path_of(hook: &Value) -> Option<&str> {
     hook.get(FIELD_TRANSCRIPT_PATH).and_then(Value::as_str)
 }
 
-/// Normalize one parsed hook payload into an [`AgentEvent`].
+/// Normalize a known Claude Code payload into an [`AgentEvent`].
+/// Mixed-agent ingestion must use [`normalize_with_agent`] with bridge identity.
 ///
 /// `ts` is the receive time (caller-injected). `raw_ref` links the event to its
 /// verbatim raw record. Returns [`NormalizeError`] for shapes the caller should
 /// record as an error event instead.
 pub fn normalize(hook: &Value, ts: i64, raw_ref: &str) -> Result<AgentEvent, NormalizeError> {
+    normalize_with_agent(
+        hook,
+        ts,
+        raw_ref,
+        Some(AgentIdentity::configured(AgentName::ClaudeCode)),
+    )
+}
+
+/// Normalize a hook using only configured producer identity or a labelled path hint.
+pub fn normalize_with_agent(
+    hook: &Value,
+    ts: i64,
+    raw_ref: &str,
+    agent: Option<AgentIdentity>,
+) -> Result<AgentEvent, NormalizeError> {
     let obj = hook.as_object().ok_or(NormalizeError::NotAnObject)?;
     let session = obj
         .get(FIELD_SESSION_ID)
@@ -146,6 +164,8 @@ pub fn normalize(hook: &Value, ts: i64, raw_ref: &str) -> Result<AgentEvent, Nor
         payload,
     );
     event.raw_event_ref = Some(raw_ref.to_string());
+    event.agent =
+        agent.or_else(|| transcript_path_of(hook).and_then(crate::infer_agent_from_transcript));
     Ok(event)
 }
 

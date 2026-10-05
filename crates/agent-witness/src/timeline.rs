@@ -15,14 +15,19 @@
 
 use std::collections::HashMap;
 
-use agent_witness_core::{AgentEvent, Attribution, EventKind, Source};
+use agent_witness_core::{
+    effective_agent, AgentBasis, AgentEvent, AgentIdentity, AgentName, Attribution, EventKind,
+    Source,
+};
 use serde_json::Value;
 
 /// Outcome of a tool call as observed from the hook stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
-    /// Completed with a `PostToolUse` result.
+    /// Configured Claude Code reported a `PostToolUse` result.
     Ok,
+    /// A response was reported without establishing command success.
+    Completed,
     /// Reported an explicit `PostToolUseFailure`.
     Failed,
     /// No matching `PostToolUse` was observed. Honest ambiguity: could be a
@@ -36,8 +41,15 @@ impl ToolStatus {
     pub fn label(self) -> &'static str {
         match self {
             ToolStatus::Ok => "ok",
+            ToolStatus::Completed => "completed (exit unknown)",
             ToolStatus::Failed => "failed",
             ToolStatus::NoResult => "no-result",
+        }
+    }
+    pub fn json_label(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            _ => self.label(),
         }
     }
 }
@@ -49,6 +61,7 @@ pub struct TimelineEntry {
     pub ts: i64,
     /// Attribution of the primary event (ADR-0002).
     pub attribution: Attribution,
+    pub agent: Option<AgentIdentity>,
     /// Origin of the primary event.
     pub source: Source,
     /// `Some` for tool-call rows; `None` for session/prompt/stop/error rows.
@@ -92,8 +105,10 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
                         let r = &events[ri];
                         let status = if r.kind == EventKind::ToolFailure {
                             ToolStatus::Failed
+                        } else if result_status(ev) == ToolStatus::Ok {
+                            result_status(r)
                         } else {
-                            ToolStatus::Ok
+                            ToolStatus::Completed
                         };
                         (status, i64_field(r, FIELD_DURATION_MS), Some(r.clone()))
                     }
@@ -102,6 +117,8 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
                 entries.push(TimelineEntry {
                     ts: ev.ts,
                     attribution: ev.attribution,
+                    agent: effective_agent(ev)
+                        .or_else(|| result.as_ref().and_then(effective_agent)),
                     source: ev.source,
                     tool_status: Some(status),
                     duration_ms: duration,
@@ -120,11 +137,12 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
                 entries.push(TimelineEntry {
                     ts: ev.ts,
                     attribution: ev.attribution,
+                    agent: effective_agent(ev),
                     source: ev.source,
                     tool_status: Some(if ev.kind == EventKind::ToolFailure {
                         ToolStatus::Failed
                     } else {
-                        ToolStatus::Ok
+                        result_status(ev)
                     }),
                     duration_ms: i64_field(ev, FIELD_DURATION_MS),
                     tag: tool_tag(ev),
@@ -136,6 +154,7 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
             _ => entries.push(TimelineEntry {
                 ts: ev.ts,
                 attribution: ev.attribution,
+                agent: effective_agent(ev),
                 source: ev.source,
                 tool_status: None,
                 duration_ms: None,
@@ -148,6 +167,16 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
     }
 
     entries
+}
+
+fn result_status(event: &AgentEvent) -> ToolStatus {
+    match effective_agent(event) {
+        Some(AgentIdentity {
+            name: AgentName::ClaudeCode,
+            basis: AgentBasis::Configured,
+        }) => ToolStatus::Ok,
+        _ => ToolStatus::Completed,
+    }
 }
 
 /// Number of tool invocations (`ToolCall` events) in a slice.
@@ -252,7 +281,7 @@ mod tests {
     use serde_json::json;
 
     fn ev(ts: i64, kind: EventKind, payload: Value) -> AgentEvent {
-        AgentEvent::new(
+        let mut event = AgentEvent::new(
             ts,
             "s",
             Source::Hooks,
@@ -260,7 +289,9 @@ mod tests {
             Attribution::Direct,
             CONFIDENCE_CERTAIN,
             payload,
-        )
+        );
+        event.agent = Some(AgentIdentity::configured(AgentName::ClaudeCode));
+        event
     }
 
     #[test]
@@ -371,5 +402,72 @@ mod tests {
     #[test]
     fn empty_input_yields_empty_timeline() {
         assert!(build_timeline(&[]).is_empty());
+    }
+    #[test]
+    fn only_configured_claude_results_establish_success() {
+        let cases = [
+            (None, ToolStatus::Completed),
+            (
+                Some(AgentIdentity::configured(AgentName::Codex)),
+                ToolStatus::Completed,
+            ),
+            (
+                Some(AgentIdentity {
+                    name: AgentName::ClaudeCode,
+                    basis: AgentBasis::Inferred,
+                }),
+                ToolStatus::Completed,
+            ),
+            (
+                Some(AgentIdentity {
+                    name: AgentName::Codex,
+                    basis: AgentBasis::Inferred,
+                }),
+                ToolStatus::Completed,
+            ),
+            (
+                Some(AgentIdentity::configured(AgentName::ClaudeCode)),
+                ToolStatus::Ok,
+            ),
+        ];
+        for (agent, status) in cases {
+            let mut call = ev(
+                1,
+                EventKind::ToolCall,
+                json!({"tool_name":"Bash", "tool_use_id":"t"}),
+            );
+            let mut result = ev(
+                2,
+                EventKind::ToolResult,
+                json!({"tool_name":"Bash", "tool_use_id":"t", "tool_response":"exit code: 0"}),
+            );
+            call.agent = agent;
+            result.agent = agent;
+            assert_eq!(
+                build_timeline(&[call, result.clone()])[0].tool_status,
+                Some(status)
+            );
+            assert_eq!(build_timeline(&[result])[0].tool_status, Some(status));
+        }
+        assert_eq!(ToolStatus::Completed.label(), "completed (exit unknown)");
+        assert_eq!(ToolStatus::Completed.json_label(), "completed");
+    }
+
+    #[test]
+    fn a_result_from_another_producer_cannot_establish_call_success() {
+        let mut call = ev(
+            1,
+            EventKind::ToolCall,
+            json!({"tool_name":"Bash", "tool_use_id":"t"}),
+        );
+        let result = ev(
+            2,
+            EventKind::ToolResult,
+            json!({"tool_name":"Bash", "tool_use_id":"t"}),
+        );
+        call.agent = Some(AgentIdentity::configured(AgentName::Codex));
+        let row = build_timeline(&[call.clone(), result]).remove(0);
+        assert_eq!(row.tool_status, Some(ToolStatus::Completed));
+        assert_eq!(row.agent, call.agent);
     }
 }

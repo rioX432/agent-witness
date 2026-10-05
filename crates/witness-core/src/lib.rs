@@ -24,7 +24,10 @@ pub mod store;
 pub mod transcript;
 
 pub use clock::{Clock, FixedClock, SystemClock};
-pub use event::{AgentEvent, Attribution, EventKind, Source, CONFIDENCE_CERTAIN, SCHEMA_VERSION};
+pub use event::{
+    effective_agent, infer_agent_from_transcript, session_agent, AgentBasis, AgentEvent,
+    AgentIdentity, AgentName, Attribution, EventKind, Source, CONFIDENCE_CERTAIN, SCHEMA_VERSION,
+};
 pub use hooks::{normalize, NormalizeError, UNKNOWN_SESSION};
 pub use liveness::{is_live, LivenessInputs, DEFAULT_LIVE_WINDOW_MS};
 pub use receiver::{IngestError, Ingested, Receiver, TranscriptIngested};
