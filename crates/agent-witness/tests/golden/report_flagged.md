@@ -33,7 +33,7 @@ _None recorded._
 
 ## Touched files
 
-_From `tool_input.file_path`; attribution noted._
+_Paths referenced by recorded tool inputs, including `apply_patch` headers; changes are not confirmed. Attribution noted._
 
 _None observed._
 

@@ -20,14 +20,13 @@ use agent_witness_core::{AgentEvent, AgentIdentity, Attribution, EventKind};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::file_refs::file_references;
 use crate::report::is_configured_claude;
 use crate::testcmd::classify_command;
 use crate::timeline::{build_timeline, TimelineEntry, ToolStatus};
 
 /// `tool_input` field naming a shell command (Bash).
 const FIELD_COMMAND: &str = "command";
-/// `tool_input` field naming the file a tool acted on.
-const FIELD_FILE_PATH: &str = "file_path";
 /// Top-level payload field wrapping a tool call's arguments.
 const FIELD_TOOL_INPUT: &str = "tool_input";
 /// `Stop`-event payload field carrying the agent's final message for the turn.
@@ -46,7 +45,7 @@ pub struct ClaimVsReality {
     /// Count of recorded tool calls with no paired result. Ambiguous by nature
     /// (a failed Bash emits no completion hook) — never reported as a failure.
     pub no_result_calls: usize,
-    /// Test files written or edited, by path heuristic, in first-seen order.
+    /// Test paths referenced by edit calls, by path heuristic, in first-seen order.
     pub test_files: Vec<TestFile>,
     /// Neutral routing cues — restatements of the facts above that point at a
     /// tension without ever judging it. May be empty.
@@ -68,12 +67,12 @@ pub struct TestCommandRun {
     pub attribution: Attribution,
 }
 
-/// A file that looks like a test file (by path heuristic) and was written/edited.
+/// A test-like path referenced by an edit call, not a confirmed change.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestFile {
-    /// The file path, verbatim from `tool_input.file_path`.
+    /// The path from `tool_input.file_path` or an `apply_patch` file header.
     pub path: String,
-    /// Tool names that referenced it (e.g. `Write`, `Edit`), in first-seen order.
+    /// Referencing tools, with patch operations labelled, in first-seen order.
     pub tools: Vec<String>,
     /// Attribution of the referencing call (ADR-0002).
     pub attribution: Attribution,
@@ -167,34 +166,32 @@ fn collect_test_commands(entries: &[TimelineEntry]) -> Vec<TestCommandRun> {
         .collect()
 }
 
-/// Test files written/edited, deduped by path with the referencing tools kept
-/// (so a read isn't assumed a write), in first-seen order.
+/// Test paths referenced by edit calls, deduped in first-seen order.
 fn collect_test_files(entries: &[TimelineEntry]) -> Vec<TestFile> {
     let mut files: Vec<TestFile> = Vec::new();
     for entry in entries.iter().filter(|e| e.tool_status.is_some()) {
-        // Only writes/edits change a file; a bare Read is not a modification.
-        // These are the tools that name their target via `file_path` (NotebookEdit
-        // uses `notebook_path`, so it wouldn't resolve here anyway).
-        if !matches!(entry.tag.as_str(), "Write" | "Edit" | "MultiEdit") {
+        if !matches!(
+            entry.tag.as_str(),
+            "Write" | "Edit" | "MultiEdit" | "apply_patch"
+        ) {
             continue;
         }
-        let Some(path) = tool_input_str(&entry.call, FIELD_FILE_PATH) else {
-            continue;
-        };
-        if !is_test_file(path) {
-            continue;
-        }
-        match files.iter_mut().find(|f| f.path == path) {
-            Some(existing) => {
-                if !existing.tools.contains(&entry.tag) {
-                    existing.tools.push(entry.tag.clone());
-                }
+        for reference in file_references(&entry.tag, &entry.call) {
+            if !is_test_file(reference.path) {
+                continue;
             }
-            None => files.push(TestFile {
-                path: path.to_string(),
-                tools: vec![entry.tag.clone()],
-                attribution: entry.attribution,
-            }),
+            match files.iter_mut().find(|f| f.path == reference.path) {
+                Some(existing) => {
+                    if !existing.tools.contains(&reference.tool) {
+                        existing.tools.push(reference.tool);
+                    }
+                }
+                None => files.push(TestFile {
+                    path: reference.path.to_string(),
+                    tools: vec![reference.tool],
+                    attribution: entry.attribution,
+                }),
+            }
         }
     }
     files

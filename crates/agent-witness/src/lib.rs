@@ -5,6 +5,7 @@
 //! store live in `agent-witness-core`.
 
 mod backup;
+mod file_refs;
 
 pub mod claim;
 pub mod digest;
