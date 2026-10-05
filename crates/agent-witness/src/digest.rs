@@ -151,8 +151,8 @@ pub struct FlagCounts {
 /// Recorded test/build/lint command activity, aggregated (ADR-0005 / issue #64).
 /// These are the cross-session tally of the per-session claim-vs-reality facts:
 /// how many test-like commands were recorded and their observed status. Facts
-/// only — a `no_result` is an unpaired call (a failed Bash fires no completion
-/// hook), surfaced as *outcome not observed*, never as a failure.
+/// only — a `no_result` is an unpaired call, surfaced as *outcome not observed*,
+/// never as a failure.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct TestActivity {
     /// Recorded `test`-kind commands.
@@ -165,6 +165,7 @@ pub struct TestActivity {
     pub ok: usize,
     /// Of all test-like commands, those with a `failed` result.
     pub failed: usize,
+    pub interrupted: usize,
     pub completed: usize,
     /// Of all test-like commands, those with no paired result (outcome not
     /// observed — never counted as a failure).
@@ -183,6 +184,7 @@ impl TestActivity {
         match status {
             "ok" => self.ok += 1,
             "failed" => self.failed += 1,
+            "interrupted" => self.interrupted += 1,
             "completed" => self.completed += 1,
             "no-result" => self.no_result += 1,
             _ => {}
@@ -196,6 +198,7 @@ impl TestActivity {
         self.lint += other.lint;
         self.ok += other.ok;
         self.failed += other.failed;
+        self.interrupted += other.interrupted;
         self.completed += other.completed;
         self.no_result += other.no_result;
     }
@@ -962,8 +965,7 @@ fn flag_line(flags: &FlagCounts) -> String {
 }
 
 /// Facts-only summary of recorded test/build/lint commands and their observed
-/// status. `no-result` is an unpaired call (a failed Bash fires no completion
-/// hook) — surfaced as such, never as a failure or as "tests did not pass".
+/// status. An unpaired call stays `no-result`, never a failure or "tests did not pass".
 fn test_activity_line(activity: &TestActivity) -> String {
     if activity.total() == 0 {
         return "Test-like commands recorded: 0".to_string();
@@ -973,9 +975,14 @@ fn test_activity_line(activity: &TestActivity) -> String {
     } else {
         String::new()
     };
+    let interrupted = if activity.interrupted > 0 {
+        format!(", {} interrupted", activity.interrupted)
+    } else {
+        String::new()
+    };
     format!(
         "Test-like commands recorded: {} (test {}, build {}, lint {}) — \
-         status: {} ok, {} failed, {} no-result{completed}",
+         status: {} ok, {} failed, {} no-result{completed}{interrupted}",
         activity.total(),
         activity.test,
         activity.build,

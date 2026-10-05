@@ -57,12 +57,24 @@ fn expected_kinds(scenario: &str) -> Vec<EventKind> {
             EventKind::ToolResult, // `ls` PostToolUse
             EventKind::Stop,
         ],
+        "claude-tool-failure" => vec![
+            EventKind::SessionStart,
+            EventKind::ToolCall,
+            EventKind::ToolFailure,
+            EventKind::ToolCall,
+            EventKind::ToolFailure,
+            EventKind::Stop,
+        ],
         other => panic!("unknown scenario {other}"),
     }
 }
 
 /// Every fixture line carries `session_id` equal to the scenario name.
-const SCENARIOS: &[&str] = &["session-basic", "session-with-failure"];
+const SCENARIOS: &[&str] = &[
+    "session-basic",
+    "session-with-failure",
+    "claude-tool-failure",
+];
 
 fn assert_store_matches_fixture(store: &SessionStore, scenario: &str) {
     let read = store.read(scenario).expect("read session");
@@ -95,6 +107,14 @@ fn assert_store_matches_fixture(store: &SessionStore, scenario: &str) {
     );
     for (rec, line) in raw.records.iter().zip(fixture.iter()) {
         assert_eq!(&rec.raw, line, "{scenario}: raw not verbatim");
+    }
+    for (event, line) in read.events.iter().zip(&fixture) {
+        if event.kind == EventKind::ToolFailure {
+            let hook: serde_json::Value = serde_json::from_str(line).unwrap();
+            for field in ["tool_input", "error", "is_interrupt", "duration_ms"] {
+                assert_eq!(event.payload.get(field), hook.get(field));
+            }
+        }
     }
 
     // The raw_ref on each event must resolve to a stored raw record.

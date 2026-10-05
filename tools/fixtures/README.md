@@ -1,8 +1,9 @@
 # Fixture tooling
 
 Scripts to capture real Claude Code sessions and turn them into sanitized golden
-fixtures under `tests/fixtures/`. Committed fixtures are **real captures** — this
-tooling is how they are (re)generated.
+fixtures under `tests/fixtures/`. This tooling (re)generates **real captures**;
+hand-written, doc-derived scenarios must be marked `synthetic` in provenance
+and listed in `tests/fixtures/README.md`.
 
 ## 1. Capture (`capture.sh`)
 

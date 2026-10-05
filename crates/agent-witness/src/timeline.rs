@@ -1,7 +1,8 @@
 //! Pure grouping of normalized [`AgentEvent`]s into a replayable timeline.
 //!
 //! The core reduction: a `PreToolUse` ([`EventKind::ToolCall`]) and its matching
-//! `PostToolUse` ([`EventKind::ToolResult`] / [`EventKind::ToolFailure`], paired
+//! `PostToolUse` / `PostToolUseFailure` ([`EventKind::ToolResult`] /
+//! [`EventKind::ToolFailure`], paired
 //! by `tool_use_id`) collapse into a single [`TimelineEntry`]. Every other event
 //! maps one-to-one. This module does no I/O and reads no clock, so the timeline
 //! is a deterministic function of its input events — the property the golden
@@ -9,9 +10,7 @@
 //!
 //! Honesty (ADR-0002): a tool call with no matching result is not silently
 //! dropped or assumed successful. It surfaces as [`ToolStatus::NoResult`],
-//! reflecting the empirical reality that a failed `Bash` fires no `PostToolUse`
-//! hook (see the normalizer docs), so absence of a result is genuinely
-//! ambiguous and is labelled as such rather than as a success or a failure.
+//! because absence of a result is ambiguous, never evidence of success or failure.
 
 use std::collections::HashMap;
 
@@ -30,9 +29,10 @@ pub enum ToolStatus {
     Completed,
     /// Reported an explicit `PostToolUseFailure`.
     Failed,
-    /// No matching `PostToolUse` was observed. Honest ambiguity: could be a
-    /// failed `Bash` (which emits no result hook), an in-progress call in a live
-    /// session, or a missing hook — never assumed to be a success.
+    /// Reported an explicit failure with `is_interrupt: true`.
+    Interrupted,
+    /// No matching result or failure was observed. Honest ambiguity: could be a
+    /// call in progress or a missing hook — never assumed to be a success.
     NoResult,
 }
 
@@ -43,6 +43,7 @@ impl ToolStatus {
             ToolStatus::Ok => "ok",
             ToolStatus::Completed => "completed (exit unknown)",
             ToolStatus::Failed => "failed",
+            ToolStatus::Interrupted => "interrupted",
             ToolStatus::NoResult => "no-result",
         }
     }
@@ -103,9 +104,9 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
                     Some(ri) => {
                         consumed[ri] = true;
                         let r = &events[ri];
-                        let status = if r.kind == EventKind::ToolFailure {
-                            ToolStatus::Failed
-                        } else if result_status(ev) == ToolStatus::Ok {
+                        let status = if r.kind == EventKind::ToolFailure
+                            || result_status(ev) == ToolStatus::Ok
+                        {
                             result_status(r)
                         } else {
                             ToolStatus::Completed
@@ -139,11 +140,7 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
                     attribution: ev.attribution,
                     agent: effective_agent(ev),
                     source: ev.source,
-                    tool_status: Some(if ev.kind == EventKind::ToolFailure {
-                        ToolStatus::Failed
-                    } else {
-                        result_status(ev)
-                    }),
+                    tool_status: Some(result_status(ev)),
                     duration_ms: i64_field(ev, FIELD_DURATION_MS),
                     tag: tool_tag(ev),
                     summary: tool_summary(ev),
@@ -170,6 +167,13 @@ pub fn build_timeline(events: &[AgentEvent]) -> Vec<TimelineEntry> {
 }
 
 fn result_status(event: &AgentEvent) -> ToolStatus {
+    if event.kind == EventKind::ToolFailure {
+        return if event.payload.get("is_interrupt").and_then(Value::as_bool) == Some(true) {
+            ToolStatus::Interrupted
+        } else {
+            ToolStatus::Failed
+        };
+    }
     match effective_agent(event) {
         Some(AgentIdentity {
             name: AgentName::ClaudeCode,

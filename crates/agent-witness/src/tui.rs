@@ -305,6 +305,12 @@ fn detail_text(entry: &TimelineEntry) -> String {
     out.push('\n');
 
     if entry.tool_status.is_some() {
+        let outcome = entry.result.as_ref().unwrap_or(&entry.call);
+        if let Some(error) = outcome.payload.get("error").and_then(Value::as_str) {
+            out.push_str("error:\n");
+            out.push_str(error);
+            out.push_str("\n\n");
+        }
         if let Some(input) = entry.call.payload.get("tool_input") {
             out.push_str("input:\n");
             out.push_str(&pretty(input));

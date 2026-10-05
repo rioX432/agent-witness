@@ -142,6 +142,28 @@ fn golden_failure_timeline_shows_no_result() {
 }
 
 #[test]
+fn failure_hook_timeline_and_detail_show_failed_and_interrupted() {
+    let events = fixture_events("claude-tool-failure");
+    let mut app = TuiApp::new("claude-tool-failure", &read(events.clone(), 0));
+    let screen = render_to_string(&app);
+    assert!(screen.contains("failed"));
+    assert!(screen.contains("interrupted"));
+    assert!(!screen.contains("no-result"));
+    app.selected = 1;
+    app.detail_open = true;
+    let screen = render_to_string(&app);
+    assert!(screen.contains("error:"));
+    assert!(screen.contains("Exit code 1"));
+
+    let mut orphan = TuiApp::new("claude-tool-failure", &read(vec![events[4].clone()], 0));
+    orphan.detail_open = true;
+    let screen = render_to_string(&orphan);
+    assert!(screen.contains("interrupted"));
+    assert!(screen.contains("cargo test"));
+    assert!(screen.contains("Tool execution aborted"));
+}
+
+#[test]
 fn empty_session_renders_without_breakage() {
     let app = TuiApp::new("empty", &read(vec![], 0));
     let screen = render_to_string(&app);

@@ -197,7 +197,12 @@ fn env_identity_tokens() -> Vec<String> {
 #[test]
 fn required_scenarios_present() {
     let names: Vec<String> = scenario_files().into_iter().map(|(n, _)| n).collect();
-    for required in ["session-basic", "session-with-failure", "codex-completed"] {
+    for required in [
+        "session-basic",
+        "session-with-failure",
+        "codex-completed",
+        "claude-tool-failure",
+    ] {
         assert!(
             names.iter().any(|n| n == required),
             "missing required fixture scenario `{required}`; found {names:?}"
@@ -245,6 +250,7 @@ fn hook_payloads_have_expected_fields() {
             let extra: &[&str] = match event {
                 "PreToolUse" => &["tool_name", "tool_input", "tool_use_id"],
                 "PostToolUse" => &["tool_name", "tool_input", "tool_response", "tool_use_id"],
+                "PostToolUseFailure" => &["tool_name", "tool_input", "tool_use_id", "error"],
                 "UserPromptSubmit" => &["prompt"],
                 "Stop" => &["stop_hook_active"],
                 "SessionStart" => &["source"],
@@ -256,8 +262,44 @@ fn hook_payloads_have_expected_fields() {
                     "{scenario} line {ln} ({event}): missing field `{field}`"
                 );
             }
+            if event == "PostToolUseFailure" {
+                assert!(
+                    obj["error"].is_string(),
+                    "{scenario} line {ln}: error must be text"
+                );
+                assert!(obj["tool_input"].is_object());
+                if let Some(flag) = obj.get("is_interrupt") {
+                    assert!(
+                        flag.is_boolean(),
+                        "{scenario} line {ln}: is_interrupt must be boolean"
+                    );
+                }
+            }
         }
     }
+}
+
+#[test]
+fn failure_hook_fixture_is_explicitly_synthetic_and_doc_derived() {
+    let path = fixtures_root().join("claude-tool-failure");
+    let provenance: Value =
+        serde_json::from_str(&fs::read_to_string(path.join("provenance.json")).unwrap()).unwrap();
+    assert_eq!(provenance["provenance"], "synthetic");
+    assert_eq!(
+        provenance["contract_source"],
+        "https://code.claude.com/docs/en/hooks#posttoolusefailure"
+    );
+    assert!(provenance["description"]
+        .as_str()
+        .unwrap()
+        .contains("hand-written"));
+    assert!(provenance.get("captured_with").is_none());
+    assert!(provenance.get("captured_on").is_none());
+    let hooks = load_lines(&path.join("hooks.jsonl"));
+    assert_eq!(
+        provenance["event_count"].as_u64().unwrap() as usize,
+        hooks.len()
+    );
 }
 
 /// The sanitization gate: no real paths, usernames, secrets, or raw ids.

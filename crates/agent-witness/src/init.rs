@@ -57,7 +57,7 @@ const CODEX_HOOKS_FILE: &str = "hooks.json";
 
 /// Hook events we register, paired with whether the event takes a tool matcher.
 ///
-/// PreToolUse / PostToolUse are per-tool (matcher `*`). SessionStart,
+/// PreToolUse / PostToolUse / PostToolUseFailure are per-tool (matcher `*`). SessionStart,
 /// UserPromptSubmit, Stop and SessionEnd are not tool-scoped and take no
 /// matcher (confirmed against the Claude Code hooks reference and mirrored by
 /// `tools/fixtures/capture.sh`). This set MUST stay identical to the events
@@ -69,6 +69,7 @@ const MANAGED_HOOKS: &[(&str, bool)] = &[
     ("UserPromptSubmit", false),
     ("PreToolUse", true),
     ("PostToolUse", true),
+    ("PostToolUseFailure", true),
     ("Stop", false),
     ("SessionEnd", false),
 ];
@@ -514,6 +515,45 @@ mod tests {
         // And a further re-run is a clean no-op (full set is idempotent).
         let again = run_init(&path, false, &clock()).unwrap();
         assert_eq!(again.outcome, InitOutcome::AlreadyInstalled);
+    }
+
+    #[test]
+    fn reinstall_adds_failure_hook_and_preserves_existing_install() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("settings.json");
+        run_init(&path, false, &clock()).unwrap();
+        let mut old = read_json(&path);
+        old["hooks"]
+            .as_object_mut()
+            .unwrap()
+            .remove("PostToolUseFailure");
+        old["hooks"]["PostToolUseFailure"] = json!([
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": "custom-failure-hook"}]}
+        ]);
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let report = run_init(&path, false, &clock()).unwrap();
+        assert_eq!(report.outcome, InitOutcome::Installed);
+        assert_eq!(read_json(report.backup.as_ref().unwrap()), old);
+        let root = read_json(&path);
+        for (event, _) in MANAGED_HOOKS {
+            assert_eq!(own_group_count(&root, event), 1, "for {event}");
+            if *event != "PostToolUseFailure" {
+                assert_eq!(root["hooks"][*event], old["hooks"][*event]);
+            }
+        }
+        assert_eq!(
+            root["hooks"]["PostToolUseFailure"][0],
+            old["hooks"]["PostToolUseFailure"][0]
+        );
+        assert_eq!(
+            root["hooks"]["PostToolUseFailure"][1]["matcher"],
+            json!(MATCH_ALL)
+        );
+        assert_eq!(
+            run_init(&path, false, &clock()).unwrap().outcome,
+            InitOutcome::AlreadyInstalled
+        );
     }
 
     #[test]

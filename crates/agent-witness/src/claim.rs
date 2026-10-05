@@ -12,16 +12,14 @@
 //! contained and what the record literally contains; it must never say the claim
 //! is false, contradicted, or that the agent lied, and it must never treat an
 //! unpaired call (`no-result`) as a failure. A `no-result` is genuine ambiguity —
-//! a failed Bash fires no completion hook (ADR-0001). Reducing and pointing at a
-//! tension is in scope; the verdict is delegated to the reader (and, at scale, to
-//! a future agent layer — never the CLI).
+//! reducing and pointing at a tension is in scope; the verdict is delegated to
+//! the reader (and, at scale, to a future agent layer — never the CLI).
 
 use agent_witness_core::{AgentEvent, AgentIdentity, Attribution, EventKind};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::file_refs::file_references;
-use crate::report::is_configured_claude;
 use crate::testcmd::classify_command;
 use crate::timeline::{build_timeline, TimelineEntry, ToolStatus};
 
@@ -42,8 +40,7 @@ pub struct ClaimVsReality {
     pub final_message: Option<String>,
     /// Test/build/lint commands recorded, in call order, with observed status.
     pub test_commands: Vec<TestCommandRun>,
-    /// Count of recorded tool calls with no paired result. Ambiguous by nature
-    /// (a failed Bash emits no completion hook) — never reported as a failure.
+    /// Count of calls with no paired result. Ambiguous, never reported as failure.
     pub no_result_calls: usize,
     /// Test paths referenced by edit calls, by path heuristic, in first-seen order.
     pub test_files: Vec<TestFile>,
@@ -60,8 +57,7 @@ pub struct TestCommandRun {
     pub command: String,
     /// `test` / `build` / `lint` (see [`crate::testcmd`]).
     pub kind: &'static str,
-    /// Observed status: `ok` / `failed` / `completed` / `no-result` — the same labels the
-    /// timeline uses; `no-result` is never called a failure.
+    /// Timeline status, including `interrupted`; `no-result` is never a failure.
     pub status: &'static str,
     /// Attribution of the call (ADR-0002).
     pub attribution: Attribution,
@@ -99,16 +95,7 @@ pub fn build_claim_vs_reality(
         return None;
     }
 
-    let claude_contract = entries
-        .iter()
-        .filter(|entry| entry.tool_status == Some(ToolStatus::NoResult))
-        .all(|entry| is_configured_claude(&entry.agent));
-    let cues = build_cues(
-        final_message.as_deref(),
-        &test_commands,
-        no_result_calls,
-        claude_contract,
-    );
+    let cues = build_cues(final_message.as_deref(), &test_commands, no_result_calls);
 
     Some(ClaimVsReality {
         final_message,
@@ -204,7 +191,6 @@ fn build_cues(
     final_message: Option<&str>,
     test_commands: &[TestCommandRun],
     no_result_calls: usize,
-    claude_contract: bool,
 ) -> Vec<String> {
     let mut cues = Vec::new();
 
@@ -234,11 +220,7 @@ fn build_cues(
 
     // Unpaired calls are ambiguous — stated as not-observed, never as failure.
     if no_result_calls > 0 {
-        let explanation = if claude_contract {
-            "a failed Bash fires no completion hook, so an unpaired call is not observed as success or failure."
-        } else {
-            "an unpaired call is not observed as success or failure."
-        };
+        let explanation = "an unpaired call is not observed as success or failure.";
         cues.push(format!(
             "{no_result_calls} recorded tool call(s) have no result — {explanation}"
         ));
