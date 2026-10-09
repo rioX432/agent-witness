@@ -26,6 +26,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::claim::{build_claim_vs_reality, ClaimVsReality};
+use crate::file_refs::file_references;
 use crate::flags::{flags_for_command, Flag};
 use crate::timefmt::{format_duration_ms, format_offset_ms, format_utc};
 use crate::timeline::{build_timeline, tool_call_count, TimelineEntry};
@@ -35,8 +36,6 @@ use crate::timeline::{build_timeline, tool_call_count, TimelineEntry};
 /// this so the honesty guarantee (ADR-0002) can never regress silently.
 pub const OBSERVATION_SCOPE_MARKER: &str = "records only what";
 
-/// `tool_input` field naming the file a tool acted on.
-const FIELD_FILE_PATH: &str = "file_path";
 /// `tool_input` field carrying a shell command (Bash).
 const FIELD_COMMAND: &str = "command";
 /// Top-level payload field wrapping a tool call's arguments.
@@ -64,7 +63,7 @@ pub struct SessionReport {
     /// `None` when there is nothing to contrast (no final message, no test-like
     /// activity). Claim-aware presentation only — never a truth verdict.
     pub claim_vs_reality: Option<ClaimVsReality>,
-    /// Distinct files named by tool `file_path` inputs, in first-seen order.
+    /// Distinct paths referenced by recorded tool inputs, in first-seen order.
     pub touched_files: Vec<TouchedFile>,
     /// Shell commands observed via Bash `tool_input.command`, in order.
     pub commands: Vec<CommandRun>,
@@ -93,14 +92,12 @@ pub struct Summary {
     pub corrupt_lines: usize,
 }
 
-/// A file named by one or more tool `file_path` inputs.
+/// A path referenced by recorded tool inputs, not a confirmed filesystem change.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TouchedFile {
-    /// The file path, verbatim from `tool_input.file_path`.
+    /// The path from `tool_input.file_path` or an `apply_patch` file header.
     pub path: String,
-    /// Tool names that referenced this path, in first-seen order (e.g. `Write`,
-    /// `Edit`, `Read`). Kept so a reader can tell a write from a mere read
-    /// rather than assuming every referenced file was modified.
+    /// Referencing tools, with patch operations labelled, in first-seen order.
     pub tools: Vec<String>,
     /// Attribution of the referencing call (ADR-0002).
     pub attribution: Attribution,
@@ -197,24 +194,23 @@ pub fn build_report(
     }
 }
 
-/// Distinct files referenced by tool `file_path` inputs, in first-seen order.
+/// Distinct paths referenced by recorded tool inputs, in first-seen order.
 fn collect_touched_files(entries: &[TimelineEntry]) -> Vec<TouchedFile> {
     let mut files: Vec<TouchedFile> = Vec::new();
     for entry in entries.iter().filter(|e| e.tool_status.is_some()) {
-        let Some(path) = tool_input_str(&entry.call, FIELD_FILE_PATH) else {
-            continue;
-        };
-        match files.iter_mut().find(|f| f.path == path) {
-            Some(existing) => {
-                if !existing.tools.contains(&entry.tag) {
-                    existing.tools.push(entry.tag.clone());
+        for reference in file_references(&entry.tag, &entry.call) {
+            match files.iter_mut().find(|f| f.path == reference.path) {
+                Some(existing) => {
+                    if !existing.tools.contains(&reference.tool) {
+                        existing.tools.push(reference.tool);
+                    }
                 }
+                None => files.push(TouchedFile {
+                    path: reference.path.to_string(),
+                    tools: vec![reference.tool],
+                    attribution: entry.attribution,
+                }),
             }
-            None => files.push(TouchedFile {
-                path: path.to_string(),
-                tools: vec![entry.tag.clone()],
-                attribution: entry.attribution,
-            }),
         }
     }
     files
@@ -529,6 +525,11 @@ fn render_claim_vs_reality(out: &mut String, claim: &Option<ClaimVsReality>) {
     if !claim.test_files.is_empty() {
         push_line(out, "**Test files written / edited**");
         push_line(out, "");
+        push_line(
+            out,
+            "_Paths referenced by recorded edit calls; changes are not confirmed._",
+        );
+        push_line(out, "");
         for file in &claim.test_files {
             push_line(
                 out,
@@ -556,7 +557,7 @@ fn render_claim_vs_reality(out: &mut String, claim: &Option<ClaimVsReality>) {
 fn render_touched_files(out: &mut String, files: &[TouchedFile]) {
     push_line(out, "## Touched files");
     push_line(out, "");
-    push_line(out, "_From `tool_input.file_path`; attribution noted._");
+    push_line(out, "_Paths referenced by recorded tool inputs, including `apply_patch` headers; changes are not confirmed. Attribution noted._");
     push_line(out, "");
     if files.is_empty() {
         push_line(out, "_None observed._");
@@ -742,6 +743,163 @@ mod tests {
         assert_eq!(report.touched_files.len(), 1);
         assert_eq!(report.touched_files[0].path, "/p/a.rs");
         assert_eq!(report.touched_files[0].tools, vec!["Write", "Edit"]);
+    }
+
+    #[test]
+    fn apply_patch_headers_reference_paths_with_delete_and_move_labels() {
+        let patch = "*** Begin Patch
+*** Add File: tests/added.rs
++new test
+*** Update File: src/lib.rs
+@@
+-old
++new
+*** Delete File: tests/deleted.rs
+*** Update File: tests/old name.rs
+*** Move to: tests/new name.rs
+@@
+-old
++new
++*** Add File: tests/content.rs
+-*** Delete File: tests/content.rs
+ *** Update File: tests/context.rs
+*** End Patch";
+        let expected = [
+            ("tests/added.rs", "apply_patch (add)"),
+            ("src/lib.rs", "apply_patch (update)"),
+            ("tests/deleted.rs", "apply_patch (delete)"),
+            ("tests/old name.rs", "apply_patch (move from)"),
+            ("tests/new name.rs", "apply_patch (move to)"),
+        ];
+        for command in [json!(patch), json!(["apply_patch", patch])] {
+            let mut call = ev(
+                1,
+                EventKind::ToolCall,
+                json!({"tool_name": "apply_patch", "tool_use_id": "patch",
+                       "tool_input": {"command": command}}),
+            );
+            call.agent = Some(AgentIdentity::configured(AgentName::Codex));
+            call.attribution = Attribution::Observed;
+            let report = build_report("s", &read_with(vec![call], 0), None);
+
+            assert_eq!(report.summary.touched_files, expected.len());
+            for (file, (path, tool)) in report.touched_files.iter().zip(expected) {
+                assert_eq!(file.path, path);
+                assert_eq!(file.tools, [tool]);
+                assert_eq!(file.attribution, Attribution::Observed);
+            }
+            assert_eq!(report.timeline[0].status, Some("no-result"));
+            let panel = report.claim_vs_reality.as_ref().unwrap();
+            let expected_tests: Vec<_> = expected
+                .iter()
+                .filter(|(path, _)| path.starts_with("tests/"))
+                .collect();
+            assert_eq!(panel.test_files.len(), expected_tests.len());
+            for (file, (path, tool)) in panel.test_files.iter().zip(expected_tests) {
+                assert_eq!(file.path, *path);
+                assert_eq!(file.tools, [*tool]);
+                assert_eq!(file.attribution, Attribution::Observed);
+            }
+            assert!(panel.test_commands.is_empty());
+            assert_eq!(panel.no_result_calls, 1);
+            let markdown = MarkdownExporter.export(&report).unwrap();
+            assert!(markdown.contains("changes are not confirmed"));
+            assert!(markdown.contains("apply_patch (delete)"));
+            assert!(markdown.contains("apply_patch (move from)"));
+            assert!(markdown.contains("apply_patch (move to)"));
+            assert!(markdown.contains(OBSERVATION_SCOPE_MARKER));
+            let json: Value = serde_json::from_str(&JsonExporter.export(&report).unwrap()).unwrap();
+            assert_eq!(json["touched_files"][2]["tools"][0], "apply_patch (delete)");
+            assert_eq!(
+                json["claim_vs_reality"]["test_files"][3]["tools"][0],
+                "apply_patch (move to)"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_patch_references_deduplicate_with_other_edit_calls_even_when_failed() {
+        let events = vec![
+            ev(
+                1,
+                EventKind::ToolCall,
+                json!({"tool_name": "Write", "tool_use_id": "write",
+                       "tool_input": {"file_path": "tests/shared.rs"}}),
+            ),
+            ev(
+                2,
+                EventKind::ToolCall,
+                json!({"tool_name": "apply_patch", "tool_use_id": "patch",
+                       "tool_input": {"command": "*** Update File: tests/shared.rs\n*** Delete File: tests/shared.rs"}}),
+            ),
+            ev(
+                3,
+                EventKind::ToolFailure,
+                json!({"tool_name": "apply_patch", "tool_use_id": "patch"}),
+            ),
+        ];
+        let report = build_report("s", &read_with(events, 0), None);
+        assert_eq!(report.summary.touched_files, 1);
+        assert_eq!(
+            report.touched_files[0].tools,
+            ["Write", "apply_patch (update)", "apply_patch (delete)"]
+        );
+        let panel = report.claim_vs_reality.unwrap();
+        assert_eq!(panel.test_files.len(), 1);
+        assert_eq!(panel.test_files[0].tools, report.touched_files[0].tools);
+        assert_eq!(report.timeline[1].status, Some("failed"));
+    }
+
+    #[test]
+    fn apply_patch_without_recognizable_headers_yields_no_paths() {
+        for input in [
+            json!({"command": "*** Begin Patch\n@@\n+content\n*** End Patch"}),
+            json!({"command": "*** Add File: \n*** Update File:\n*** Delete File: \n*** Move to: "}),
+            json!({"command": ["apply_patch", "+*** Add File: tests/content.rs", null, 1]}),
+            json!({"command": null}),
+            json!({}),
+        ] {
+            let report = build_report(
+                "s",
+                &read_with(
+                    vec![ev(
+                        1,
+                        EventKind::ToolCall,
+                        json!({"tool_name": "apply_patch", "tool_use_id": "patch", "tool_input": input}),
+                    )],
+                    0,
+                ),
+                None,
+            );
+            assert_eq!(report.summary.touched_files, 0);
+            assert!(report.touched_files.is_empty());
+            assert!(report.claim_vs_reality.is_none());
+        }
+    }
+
+    #[test]
+    fn patch_headers_in_other_tools_or_orphan_results_are_not_edit_references() {
+        for (kind, tool) in [
+            (EventKind::ToolCall, "Bash"),
+            (EventKind::ToolCall, "Read"),
+            (EventKind::ToolResult, "apply_patch"),
+        ] {
+            let report = build_report(
+                "s",
+                &read_with(
+                    vec![ev(
+                        1,
+                        kind,
+                        json!({"tool_name": tool, "tool_use_id": "patch",
+                           "tool_input": {"command": "*** Add File: tests/added.rs"}}),
+                    )],
+                    0,
+                ),
+                None,
+            );
+            assert!(report.touched_files.is_empty());
+            assert!(report.claim_vs_reality.is_none());
+        }
     }
 
     #[test]
