@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-10-09
+
+Re-run `agent-witness init` after upgrading so the new hooks are registered; for Codex, run `agent-witness init --codex`. Records written before that show `completed (exit unknown)` instead of `ok`.
+
+### Added
+- Every event records the agent that produced it (`agent`: `claude-code` or `codex`, with a `configured` or `inferred` basis). `emit` takes `--agent <name>`, and `init` writes it into each hook it registers. The field is optional, so older lines still parse and schema version 1 is unchanged. The agent is shown in `ls`, `report` and `top`, and `digest` groups by it (#81)
+- `init --codex` (and `--remove`) manages `~/.codex/hooks.json`: idempotent, timestamped backup, foreign entries untouched, and an existing hand-written `agent-witness emit` entry is upgraded in place (#82)
+- Codex `apply_patch` file paths (`*** Add/Update/Delete File:` and `*** Move to:` headers) are counted in the report's touched files, so `report` no longer shows `touched_files: 0` for Codex sessions that edited files. Deletes and moves are labelled. The paths are those referenced by a recorded edit call, not confirmed changes, and the report wording says "referenced" (#83)
+- `init` registers Claude Code's `PostToolUseFailure` hook, and the projection keeps its `tool_input`, `error` and `is_interrupt` fields. An interrupted call renders as `interrupted`, distinct from `failed`. Not yet confirmed against a live session: the fixture is hand-written from the hooks documentation, so whether a real non-zero-exit Bash fires this hook is unverified (#84)
+- Waiting and permission signals (`Notification`, `PermissionRequest`, `PermissionDenied`, `Interrupt`) are recorded as additive event kinds, registered by `init`. `ls --json`, `top` and the statusline show `running` / `waiting:permission` / `waiting:input` / `idle` with the time since it began. The signal itself is `direct`; "still waiting now" is inferred from the absence of later events. Message text is not kept. Known limits: a wait has no expiry, so a session that ended without `SessionEnd` keeps reading `waiting:*` with a growing age; after a permission is granted the state stays `waiting:permission` until the next hook event; the statusline now parses the session log on each render. These hooks are also fixture-derived from the documentation, not yet seen firing in a live session (#85)
+
+### Changed
+- Tool results get a new status, `completed`, shown as `completed (exit unknown)`. `ok` is reserved for results from a configured Claude Code identity; Codex, unknown and inferred identities get `completed`, because Codex fires `PostToolUse` even when a command exits non-zero. It is applied across `report`, `digest`, `top`, `ls`, the TUI and JSON. No exit code is parsed from `tool_response` text (#81)
+
 ## [0.0.7] - 2026-08-02
 
 ### Fixed
@@ -92,7 +106,8 @@ v0.1 feature set.
 - Workspace scaffold, `just verify` gate, CI mirroring the local gate, ADRs (5e26c33, 4e056ad)
 - Distribution via dist (cargo-dist): release CI on version tags, Homebrew tap, cargo-binstall metadata, shell installer (df46a90)
 
-[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/rioX432/agent-witness/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/rioX432/agent-witness/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/rioX432/agent-witness/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/rioX432/agent-witness/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/rioX432/agent-witness/compare/v0.0.4...v0.0.5
