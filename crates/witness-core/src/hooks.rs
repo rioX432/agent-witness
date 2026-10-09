@@ -6,12 +6,8 @@
 //! [`Attribution::Direct`] with full confidence (ADR-0002) — the agent reported
 //! them itself.
 //!
-//! Claude Code failure representation: a `Bash` exiting non-zero fires **no**
-//! `PostToolUse` hook (empirically pinned by issue #8), so a failure shows up as
-//! a [`EventKind::ToolCall`] with no matching [`EventKind::ToolResult`]. The
-//! normalizer therefore never fabricates a failure from a single payload; it
-//! only maps an explicit `PostToolUseFailure` hook to [`EventKind::ToolFailure`]
-//! should upstream ever emit one.
+//! Only an explicit `PostToolUseFailure` maps to [`EventKind::ToolFailure`].
+//! A missing result remains ambiguous; error text never establishes an exit code.
 
 use serde_json::{json, Map, Value};
 
@@ -137,7 +133,15 @@ pub fn normalize_with_agent(
             EventKind::ToolFailure,
             project(
                 obj,
-                &["tool_name", "tool_use_id", "tool_response", "duration_ms"],
+                &[
+                    "tool_name",
+                    "tool_use_id",
+                    "tool_input",
+                    "error",
+                    "is_interrupt",
+                    "tool_response",
+                    "duration_ms",
+                ],
             ),
         ),
         HOOK_STOP => (

@@ -1,0 +1,19 @@
+{
+  "scenario": "claude-tool-failure",
+  "provenance": "synthetic",
+  "description": "Doc-derived, hand-written Bash failure and abort-shaped failure; not recorded from a live session.",
+  "hook_payload_schema": 1,
+  "contract_source": "https://code.claude.com/docs/en/hooks#posttoolusefailure",
+  "contract_verified_on": "2026-10-05",
+  "sanitized_by": "Hand-authored with fixture placeholders; checked by fixtures_lint.rs and reviewed against SANITIZE_CHECKLIST.md.",
+  "event_count": 6,
+  "event_sequence": [
+    "SessionStart",
+    "PreToolUse",
+    "PostToolUseFailure",
+    "PreToolUse",
+    "PostToolUseFailure",
+    "Stop"
+  ],
+  "notes": "No live capture was available. All commands, error text, ids and timing are hand-written examples, not observations. The docs show a non-zero Bash command delivering PostToolUseFailure with tool_input, tool_use_id, error, optional is_interrupt and duration_ms. The true flag models a failure delivered as an abort; cancelling a running tool does not necessarily fire this hook. No exit code is extracted from error text. Legacy no-result records are unchanged."
+}

@@ -7,8 +7,8 @@
 //! shown derive from the `ts` carried on each [`AgentEvent`].
 //!
 //! Honesty (ADR-0002): the report never claims more than was observed. Touched
-//! files and commands carry their `attribution`; a failed Bash call surfaces as
-//! `no-result`, never as a success (see [`crate::timeline`]); the corrupt-line
+//! files and commands carry their `attribution`; an unpaired call stays
+//! `no-result` (see [`crate::timeline`]); the corrupt-line
 //! count is reported; and every report ends with an observation-scope
 //! disclaimer stating the hooks-based limits (e.g. `bash script.sh` internals
 //! are invisible). The disclaimer is mandatory — see [`OBSERVATION_SCOPE_MARKER`].
@@ -319,8 +319,8 @@ fn disclaimer_lines(corrupt_lines: usize) -> Vec<String> {
         "A command run via Bash is recorded by its command line only; what it \
          does internally (e.g. `bash script.sh`) is not observed."
             .to_string(),
-        "A failed Bash call fires no completion hook, so it appears as a call \
-         with no result — never as a success."
+        "An explicit failure hook reports failed or interrupted; a call with no \
+         result remains no-result — never assumed successful or failed."
             .to_string(),
         "Flagged commands, when present, describe the command class only — never \
          intent, outcome, or whether any damage occurred."
@@ -1111,7 +1111,7 @@ mod tests {
         // It DOES surface the honest ambiguity instead: the command row shows the
         // unpaired status, and a cue explains it without calling it a failure.
         assert!(md.contains("no-result"));
-        assert!(md.contains("no completion hook"));
+        assert!(md.contains("not observed as success or failure"));
     }
 
     #[test]

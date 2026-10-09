@@ -27,6 +27,12 @@ and a failing Bash have plain-string `PostToolUse` responses with no structured
 exit code. Their intended outcomes are scenario provenance, not hook evidence.
 The fixture includes no conversation text.
 
+`claude-tool-failure` (issue #84) is **synthetic**, doc-derived and hand-written
+from the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#posttoolusefailure).
+It covers a non-zero Bash failure and an abort-shaped failure with
+`is_interrupt: true`; it is not a recording or a live cancellation test.
+The hand-written error string is preserved as text, never parsed for an exit code.
+
 ## Scenarios
 
 | Directory | Flow | Why it matters |
@@ -35,6 +41,7 @@ The fixture includes no conversation text.
 | `session-with-failure/` | A Bash call fails (missing file), a diagnostic succeeds | Failure path: a failed Bash call fires **no** PostToolUse (see below) |
 | `session-multiturn/` | Two turns in one session (turn 2 resumed via `--continue`): write then edit a file | Liveness canary (issue #23): a `Stop` at index 4 is followed by more events, proving `Stop` fires per-turn, not per-session |
 | `session-flagged/` | **Synthetic**: `git push --force` then `rm -rf ~/` | Destructive-command flagging (issue #48): report's flags section, severity-sorted (critical `rm -rf ~/` above warning force-push) |
+| `claude-tool-failure/` | **Synthetic**: paired Bash failure and abort-shaped failure | Explicit `failed` and `interrupted`, with no inferred exit code |
 | `codex-completed/` | **Synthetic**: successful and failing `cargo test`, both with `PostToolUse` | Codex hooks establish completion, never success; both commands remain `completed` |
 
 ## Transcript fixture (issue #4)
@@ -48,11 +55,12 @@ adapter is versioned and best-effort. The adapter extracts only the assistant
 type is recognized-but-skipped and counted in `TranscriptStats`. Provenance and
 line inventory live in `session-basic/provenance.json` under `transcript`.
 
-### Observed failure behavior (Claude Code 2.1.198)
+### Observed failure behavior in the legacy capture (Claude Code 2.1.198)
 
 A Bash tool call that exits non-zero produces a `PreToolUse` with **no matching
-`PostToolUse`**. The failure is only observable from the missing pair (correlate
-by `tool_use_id`) plus the `Stop` message. This is the observation gap ADR-0001
+`PostToolUse`**. That capture did not register `PostToolUseFailure`, so it cannot establish
+whether the failure hook fired. The missing pair (correlate by `tool_use_id`)
+is still `no-result`, not proof of failure. This is the observation gap ADR-0001
 calls out; the failure fixture preserves it deliberately.
 
 ## Schema version & canary
