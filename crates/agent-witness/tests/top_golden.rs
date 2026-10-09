@@ -85,6 +85,7 @@ fn sample_rows() -> Vec<TopRow> {
             last_activity_age_ms: Some(2_000),
             elapsed_ms: Some(125_000),
             events: 42,
+            activity: activity(125_000),
         },
         TopRow {
             agent: Some(agent_witness_core::AgentIdentity::configured(
@@ -96,6 +97,7 @@ fn sample_rows() -> Vec<TopRow> {
             last_activity_age_ms: Some(15_000),
             elapsed_ms: Some(600_000),
             events: 9,
+            activity: activity(600_000),
         },
         TopRow {
             agent: Some(agent_witness_core::AgentIdentity::configured(
@@ -107,8 +109,18 @@ fn sample_rows() -> Vec<TopRow> {
             last_activity_age_ms: Some(45_000),
             elapsed_ms: Some(90_000),
             events: 3,
+            activity: activity(90_000),
         },
     ]
+}
+
+fn activity(age_ms: i64) -> agent_witness_core::Activity {
+    agent_witness_core::Activity {
+        state: agent_witness_core::ActivityState::Running,
+        since_ms: Some(BASE_TS),
+        age_ms: Some(age_ms),
+        attribution: agent_witness_core::Attribution::Inferred,
+    }
 }
 
 #[test]
@@ -176,4 +188,20 @@ fn fixture_events(scenario: &str) -> Vec<AgentEvent> {
             normalize(&value, ts, &format!("raw-{i}")).expect("fixture line normalizes")
         })
         .collect()
+}
+
+#[test]
+fn golden_top_waiting_permission_and_input() {
+    let mut rows = sample_rows();
+    rows.truncate(2);
+    rows[0].activity.state = agent_witness_core::ActivityState::WaitingPermission;
+    rows[1].activity.state = agent_witness_core::ActivityState::WaitingInput;
+    for row in &mut rows {
+        row.running_tool = None;
+    }
+    let screen = render_top_to_string(&TopApp::new(rows));
+    assert!(screen.contains("waiting:permission"));
+    assert!(screen.contains("waiting:input"));
+    assert!(screen.contains("inferred"));
+    assert_golden("top_waiting", &screen);
 }

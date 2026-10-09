@@ -25,8 +25,8 @@ const EVENTS_FILE: &str = "events.jsonl";
 /// File name for the per-session metadata.
 const META_FILE: &str = "meta.json";
 /// File name for the per-session raw source log (canonical-source preservation,
-/// ADR-0001): every raw hook payload is kept verbatim alongside its normalized
-/// event, linked by `raw_event_ref`.
+/// ADR-0001): hook payloads are kept alongside their normalized event.
+/// Signal metadata omits text and discloses that omission in `omitted_fields`.
 const RAW_FILE: &str = "raw.jsonl";
 /// File name for the per-session usage sidecar. Derived data: recomputed from the
 /// whole transcript and overwritten on each ingest, written atomically.
@@ -77,11 +77,10 @@ pub struct SessionMeta {
     pub agent: Option<crate::AgentIdentity>,
 }
 
-/// A raw source record: one hook payload preserved verbatim (ADR-0001).
+/// A source record, verbatim unless `omitted_fields` discloses signal redaction.
 ///
-/// The original bytes are stored as a string in [`RawRecord::raw`] rather than a
-/// re-serialized `Value`, so key order and formatting are preserved exactly and
-/// the canonical source is never silently rewritten. Each record is linked to
+/// Unredacted records preserve key order and formatting. Signal records retain
+/// metadata only and name the omitted fields. Each record is linked to
 /// its normalized [`AgentEvent`] by matching `raw_ref` == `AgentEvent.raw_event_ref`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawRecord {
@@ -93,8 +92,10 @@ pub struct RawRecord {
     pub session: String,
     /// Stable id linking this raw record to its normalized event.
     pub raw_ref: String,
-    /// The raw hook payload, verbatim as received on stdin / the socket.
+    /// Source JSON; verbatim when no fields were omitted.
     pub raw: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_fields: Vec<String>,
 }
 
 /// Result of reading a session's event log.
@@ -579,6 +580,7 @@ mod tests {
             ts: CREATED_TS,
             session: "sess-raw".to_string(),
             raw_ref: "raw-0".to_string(),
+            omitted_fields: Vec::new(),
             raw: "{\"a\":1,\n\"b\":\"x\\ny\"}".to_string(),
         };
         writer.append_raw(&rec).unwrap();
@@ -607,6 +609,7 @@ mod tests {
             ts: CREATED_TS,
             session: "sess-raw-bad".to_string(),
             raw_ref: "raw-0".to_string(),
+            omitted_fields: Vec::new(),
             raw: "{}".to_string(),
         };
         writer.append_raw(&rec).unwrap();
@@ -752,6 +755,7 @@ mod tests {
                 ts: CREATED_TS,
                 session: "legacy".to_string(),
                 raw_ref: "raw-0".to_string(),
+                omitted_fields: Vec::new(),
                 raw: r#"{"transcript_path":"/home/user/.codex/sessions/example.jsonl"}"#
                     .to_string(),
             })

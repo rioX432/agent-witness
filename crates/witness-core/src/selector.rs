@@ -69,6 +69,7 @@ pub struct SessionSummary {
     pub event_count: usize,
     /// Number of tool invocations (`ToolCall` events).
     pub tool_calls: usize,
+    pub activity_inputs: liveness::ActivityInputs,
 }
 
 impl SessionSummary {
@@ -88,8 +89,13 @@ impl SessionSummary {
         LivenessInputs {
             last_is_stop: self.last_is_stop,
             last_is_session_end: self.last_is_session_end,
-            last_event_ts: self.last_event_ts,
+            last_event_ts: self.activity_inputs.last_activity_ms,
+            state: Some(self.activity_inputs.state),
         }
+    }
+
+    pub fn activity_within(&self, now_ms: i64, window_ms: i64) -> liveness::Activity {
+        liveness::infer_activity(self.activity_inputs, now_ms, window_ms)
     }
 
     /// Liveness under the default window ([`DEFAULT_LIVE_WINDOW_MS`]).
@@ -190,6 +196,7 @@ pub fn summarize(id: &str, created_ts: Option<i64>, events: &[AgentEvent]) -> Se
         last_is_session_end,
         event_count: events.len(),
         tool_calls,
+        activity_inputs: liveness::activity_inputs(events),
     }
 }
 

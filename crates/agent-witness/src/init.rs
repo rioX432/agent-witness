@@ -55,12 +55,11 @@ const SETTINGS_FILE: &str = "settings.json";
 const CODEX_DIR: &str = ".codex";
 const CODEX_HOOKS_FILE: &str = "hooks.json";
 
-/// Hook events we register, paired with whether the event takes a tool matcher.
+/// Claude hook events, paired with whether the event uses a matcher.
 ///
-/// PreToolUse / PostToolUse / PostToolUseFailure are per-tool (matcher `*`). SessionStart,
-/// UserPromptSubmit, Stop and SessionEnd are not tool-scoped and take no
-/// matcher (confirmed against the Claude Code hooks reference and mirrored by
-/// `tools/fixtures/capture.sh`). This set MUST stay identical to the events
+/// Tool events use matcher `*`; Notification omits it to capture every type.
+/// Lifecycle events also omit it. The official contract is mirrored by
+/// `tools/fixtures/capture.sh`. This set MUST stay identical to the events
 /// capture.sh registers, or fixtures and real sessions drift and the pipeline
 /// silently loses events (issue #26); `init_and_capture_register_same_events`
 /// pins that parity.
@@ -70,11 +69,20 @@ const MANAGED_HOOKS: &[(&str, bool)] = &[
     ("PreToolUse", true),
     ("PostToolUse", true),
     ("PostToolUseFailure", true),
+    ("Notification", false),
+    ("PermissionRequest", true),
+    ("PermissionDenied", true),
     ("Stop", false),
     ("SessionEnd", false),
 ];
 
-const CODEX_ADDITIONAL_HOOKS: &[(&str, bool)] = &[
+const CODEX_HOOKS: &[(&str, bool)] = &[
+    ("SessionStart", false),
+    ("UserPromptSubmit", false),
+    ("PreToolUse", true),
+    ("PostToolUse", true),
+    ("Stop", false),
+    ("SessionEnd", false),
     ("PermissionRequest", true),
     ("SubagentStart", true),
     ("SubagentStop", true),
@@ -218,11 +226,32 @@ pub(crate) fn load_settings(path: &Path) -> Result<Option<Map<String, Value>>> {
 fn install_entries(root: &mut Map<String, Value>, agent: AgentName) -> Result<bool> {
     let hooks = hooks_object_mut(root)?;
     let mut changed = false;
-    let additional = match agent {
-        AgentName::ClaudeCode => &[][..],
-        AgentName::Codex => CODEX_ADDITIONAL_HOOKS,
+    if agent == AgentName::Codex {
+        for event in ["PostToolUseFailure", "Notification", "PermissionDenied"] {
+            let Some(array) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let mut touched = false;
+            array.retain_mut(|group| {
+                if !strip_own_from_group(group) {
+                    return true;
+                }
+                touched = true;
+                !group_hooks_empty(group)
+            });
+            if touched {
+                changed = true;
+                if array.is_empty() {
+                    hooks.remove(event);
+                }
+            }
+        }
+    }
+    let managed = match agent {
+        AgentName::ClaudeCode => MANAGED_HOOKS,
+        AgentName::Codex => CODEX_HOOKS,
     };
-    for (event, use_matcher) in MANAGED_HOOKS.iter().chain(additional) {
+    for (event, use_matcher) in managed {
         let array = event_array_mut(hooks, event)?;
         let mut found = false;
         for group in array.iter_mut() {
@@ -576,6 +605,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_registers_only_documented_hooks_and_shares_permission_capture_shape() {
+        let script = std::fs::read_to_string(capture_sh_path()).unwrap();
+        let capture = capture_sh_event_shapes(&script);
+        assert!(capture.contains(&("PermissionRequest".into(), true)));
+        assert!(CODEX_HOOKS.contains(&("PermissionRequest", true)));
+        assert!(CODEX_HOOKS.contains(&("Interrupt", false)));
+        for unsupported in ["Notification", "PermissionDenied", "PostToolUseFailure"] {
+            assert!(!CODEX_HOOKS.iter().any(|(name, _)| *name == unsupported));
+        }
+        assert!(!MANAGED_HOOKS.iter().any(|(name, _)| *name == "Interrupt"));
+    }
+
     /// Absolute path to `tools/fixtures/capture.sh` from this crate's manifest.
     fn capture_sh_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -803,9 +845,9 @@ mod tests {
         let root = read_json(&path);
         assert_eq!(
             root[HOOKS_KEY].as_object().unwrap().len(),
-            MANAGED_HOOKS.len() + CODEX_ADDITIONAL_HOOKS.len()
+            CODEX_HOOKS.len()
         );
-        for (event, use_matcher) in MANAGED_HOOKS.iter().chain(CODEX_ADDITIONAL_HOOKS) {
+        for (event, use_matcher) in CODEX_HOOKS {
             let group = &root[HOOKS_KEY][*event][0];
             assert_eq!(
                 group[GROUP_HOOKS_KEY][0][COMMAND_KEY],
@@ -814,6 +856,33 @@ mod tests {
             );
             assert_eq!(group.get(MATCHER_KEY).is_some(), *use_matcher);
         }
+    }
+
+    #[test]
+    fn codex_upgrade_removes_only_owned_unsupported_hooks() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = settings_path_in(home.path(), AgentName::Codex);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = json!({"hooks": {"PostToolUseFailure": [{"matcher":"*", "hooks":[
+            {"type":"command", "command":"agent-witness emit --agent codex"},
+            {"type":"command", "command":"foreign-handler"}
+        ]}]}});
+        std::fs::write(&path, serde_json::to_string(&original).unwrap()).unwrap();
+        let report = run_init_for_agent(&path, false, &clock(), AgentName::Codex).unwrap();
+        assert_eq!(report.outcome, InitOutcome::Installed);
+        assert!(report.backup.is_some());
+        let root = read_json(&path);
+        assert_eq!(own_group_count(&root, "PostToolUseFailure"), 0);
+        assert_eq!(
+            root["hooks"]["PostToolUseFailure"][0]["hooks"],
+            json!([{ "type":"command", "command":"foreign-handler" }])
+        );
+        assert_eq!(
+            run_init_for_agent(&path, false, &clock(), AgentName::Codex)
+                .unwrap()
+                .outcome,
+            InitOutcome::AlreadyInstalled
+        );
     }
 
     #[test]
@@ -867,7 +936,7 @@ mod tests {
             root[HOOKS_KEY]["CustomEvent"],
             original[HOOKS_KEY]["CustomEvent"]
         );
-        for (event, _) in MANAGED_HOOKS.iter().chain(CODEX_ADDITIONAL_HOOKS) {
+        for (event, _) in CODEX_HOOKS {
             assert_eq!(own_group_count(&root, event), 1, "for {event}");
         }
     }

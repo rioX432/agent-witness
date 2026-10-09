@@ -47,3 +47,9 @@ automatically; add more with `--home/--user/--host`.
 1. Run the manual checklist: `tests/fixtures/SANITIZE_CHECKLIST.md`
 2. Update the scenario's `provenance.json`
 3. `just test-fixtures` (the `fixtures_lint.rs` gate)
+
+The capture hook set matches Claude `init`, including Notification,
+PermissionRequest and PermissionDenied. `capture.sh` uses permission bypass
+for its headless run, so registering those hooks does not guarantee that a
+waiting signal is captured. The waiting fixtures are hand-written synthetic
+examples; this script does not capture Codex sessions.

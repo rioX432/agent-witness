@@ -1,13 +1,13 @@
 ┌agent-witness · top───────────────────────────────────────────────────────────┐
-│3 live session(s)                                                             │
+│2 live session(s)                                                             │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌live sessions─────────────────────────────────────────────────────────────────┐
-│  agent-witness  agent-witness      Bash              2.0s     2m05s      42  │
-│  running            2m05s (inferred)                                         │
-│> avvy-core-9f8c avvy-core          Edit             15.0s    10m00s       9  │
-│  running            10m00s (inferred)                                        │
-│  idle-thinking  docs               -                45.0s     1m30s       3  │
-│  running            1m30s (inferred)                                         │
+│> agent-witness  agent-witness      -                 2.0s     2m05s      42  │
+│  waiting:permission 2m05s (inferred)                                         │
+│  avvy-core-9f8c avvy-core          -                15.0s    10m00s       9  │
+│  waiting:input      10m00s (inferred)                                        │
+│                                                                              │
+│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

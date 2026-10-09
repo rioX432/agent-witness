@@ -1,8 +1,9 @@
 //! Receiver: turn one raw hook payload into persisted records.
 //!
 //! Ties the [`crate::hooks`] normalizer to the [`crate::store`]: for each raw
-//! payload it writes the verbatim raw record **and** the normalized event,
-//! linked by `raw_event_ref` (canonical-source preservation, ADR-0001).
+//! payload it writes a source record and a normalized event linked by
+//! `raw_event_ref`. Signal text is omitted with explicit field disclosure;
+//! other source records preserve the original bytes (ADR-0001).
 //!
 //! Malformed or unmappable input never propagates as an error — it is recorded
 //! as an [`crate::EventKind::Error`] event so nothing is silently dropped. The
@@ -105,7 +106,7 @@ impl Receiver {
         self.ingest_with_agent(raw_payload, clock, None)
     }
 
-    /// Keep bridge identity outside the verbatim canonical hook bytes.
+    /// Keep bridge identity outside source JSON; disclose signal-text omissions.
     pub fn ingest_with_agent(
         &mut self,
         raw_payload: &str,
@@ -113,7 +114,15 @@ impl Receiver {
         agent: Option<crate::AgentIdentity>,
     ) -> Result<Ingested, IngestError> {
         let ts = clock.now_ms();
-        let prepared = prepare(raw_payload);
+        let mut value = serde_json::from_str::<serde_json::Value>(raw_payload).ok();
+        let omitted_fields = value.as_mut().map(hooks::redact_signal).unwrap_or_default();
+        let retained_raw = match value {
+            Some(value) if !omitted_fields.is_empty() => {
+                serde_json::to_string(&value).map_err(crate::store::StoreError::from)?
+            }
+            _ => raw_payload.to_string(),
+        };
+        let prepared = prepare(&retained_raw);
 
         let session = match &prepared {
             Prepared::Normalize { session, .. } | Prepared::Error { session, .. } => {
@@ -143,7 +152,8 @@ impl Receiver {
             ts,
             session: session.clone(),
             raw_ref: raw_ref.clone(),
-            raw: raw_payload.to_string(),
+            raw: retained_raw,
+            omitted_fields,
         };
 
         let mut writer = self.store.open_with_agent(&session, ts, event.agent)?;
@@ -384,6 +394,7 @@ mod tests {
                     ts: TS,
                     session: "s1".to_string(),
                     raw_ref: format!("raw-{seq}"),
+                    omitted_fields: Vec::new(),
                     raw: "{}".to_string(),
                 })
                 .unwrap();

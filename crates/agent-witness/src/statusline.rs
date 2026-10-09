@@ -56,6 +56,7 @@ const COMMAND_KEY: &str = "command";
 const COMMAND_TYPE: &str = "command";
 
 /// Store file whose lines are the session's recorded events.
+#[cfg(test)]
 const EVENTS_FILE: &str = "events.jsonl";
 
 /// Segment shown while the session's events are landing in the store.
@@ -273,7 +274,11 @@ fn backup_settings(path: &Path, clock: &dyn Clock) -> Result<Option<PathBuf>> {
 /// line (if any) followed by our witness segment. Never fails — every error
 /// degrades to the best line we can still render honestly.
 pub async fn render(stdin_json: &str, sessions_root: &Path, wrap_payload: Option<&str>) -> String {
-    let ours = witness_segment(stdin_json, sessions_root);
+    let ours = witness_segment(
+        stdin_json,
+        sessions_root,
+        agent_witness_core::SystemClock.now_ms(),
+    );
     let Some(original) = wrap_payload.and_then(decode_wrap) else {
         return ours;
     };
@@ -289,10 +294,9 @@ pub async fn render(stdin_json: &str, sessions_root: &Path, wrap_payload: Option
 
 /// Our segment for the session named in the statusline stdin JSON.
 ///
-/// Reads only this session's `events.jsonl` and counts lines — no JSON parse,
-/// no store scan — so the ~3/sec statusline cadence stays cheap. A missing or
-/// empty file renders as *not recording*: silence must be visible.
-fn witness_segment(stdin_json: &str, sessions_root: &Path) -> String {
+/// Reads only this session, using the shared inferred activity rule.
+/// A missing or empty file renders as not recording; corrupt lines are disclosed.
+fn witness_segment(stdin_json: &str, sessions_root: &Path, now_ms: i64) -> String {
     let session_id = serde_json::from_str::<Value>(stdin_json)
         .ok()
         .and_then(|v| {
@@ -311,11 +315,26 @@ fn witness_segment(stdin_json: &str, sessions_root: &Path) -> String {
     {
         return SEG_NOT_RECORDING.to_string();
     }
-    let events = sessions_root.join(&session_id).join(EVENTS_FILE);
-    match std::fs::read(&events) {
-        Ok(bytes) if !bytes.is_empty() => {
-            let count = bytes.iter().filter(|b| **b == b'\n').count();
-            format!("{SEG_RECORDING} {count}ev")
+    let store = agent_witness_core::SessionStore::new(sessions_root);
+    match store.read(&session_id) {
+        Ok(read) if !read.events.is_empty() || read.skipped_lines > 0 => {
+            let summary = agent_witness_core::summarize(&session_id, None, &read.events);
+            let activity =
+                summary.activity_within(now_ms, agent_witness_core::DEFAULT_LIVE_WINDOW_MS);
+            let age = activity
+                .age_ms
+                .map(crate::timefmt::format_duration_ms)
+                .unwrap_or_else(|| "-".into());
+            let corrupt = if read.skipped_lines > 0 {
+                format!(" {} corrupt", read.skipped_lines)
+            } else {
+                String::new()
+            };
+            format!(
+                "{SEG_RECORDING} {}ev {} {age} (inferred){corrupt}",
+                read.events.len(),
+                activity.state.label()
+            )
         }
         _ => SEG_NOT_RECORDING.to_string(),
     }
@@ -510,15 +529,78 @@ mod tests {
     }
 
     #[test]
-    fn witness_segment_counts_events_and_flags_silence() {
+    fn witness_segment_shows_wait_age_then_running_after_next_tool() {
+        use agent_witness_core::{
+            AgentEvent, Attribution, EventKind, SessionStore, Source, CONFIDENCE_CERTAIN,
+        };
+        const STEP_MS: i64 = 1_000;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("waiting", TS).unwrap();
+        let event = |ts, kind| {
+            AgentEvent::new(
+                ts,
+                "waiting",
+                Source::Hooks,
+                kind,
+                Attribution::Direct,
+                CONFIDENCE_CERTAIN,
+                json!({}),
+            )
+        };
+        writer
+            .append(&event(TS, EventKind::PermissionRequest))
+            .unwrap();
+        let waiting = witness_segment(r#"{"session_id":"waiting"}"#, tmp.path(), TS + STEP_MS);
+        assert!(
+            waiting.contains("waiting:permission 1.0s (inferred)"),
+            "{waiting}"
+        );
+        writer
+            .append(&event(TS + STEP_MS, EventKind::ToolCall))
+            .unwrap();
+        let running = witness_segment(r#"{"session_id":"waiting"}"#, tmp.path(), TS + STEP_MS);
+        assert!(running.contains("running 0ms (inferred)"), "{running}");
+        assert!(!running.contains("waiting:"));
+    }
+
+    /// Append one valid hook event per kind to `session` under `root`.
+    fn record_events(root: &Path, session: &str, kinds: &[(i64, agent_witness_core::EventKind)]) {
+        use agent_witness_core::{
+            AgentEvent, Attribution, SessionStore, Source, CONFIDENCE_CERTAIN,
+        };
+        let mut writer = SessionStore::new(root).open(session, TS).unwrap();
+        for (ts, kind) in kinds {
+            let event = AgentEvent::new(
+                *ts,
+                session,
+                Source::Hooks,
+                *kind,
+                Attribution::Direct,
+                CONFIDENCE_CERTAIN,
+                json!({}),
+            );
+            writer.append(&event).unwrap();
+        }
+    }
+
+    #[test]
+    fn witness_segment_counts_valid_events_and_flags_silence() {
+        use agent_witness_core::EventKind;
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        let dir = root.join("sess-1");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(EVENTS_FILE), "{}\n{}\n{}\n").unwrap();
+        record_events(
+            root,
+            "sess-1",
+            &[
+                (TS, EventKind::ToolCall),
+                (TS + 1, EventKind::ToolResult),
+                (TS + 2, EventKind::ToolCall),
+            ],
+        );
 
-        let seg = witness_segment(r#"{"session_id":"sess-1"}"#, root);
-        assert_eq!(seg, format!("{SEG_RECORDING} 3ev"));
+        let seg = witness_segment(r#"{"session_id":"sess-1"}"#, root, TS + 2);
+        assert_eq!(seg, format!("{SEG_RECORDING} 3ev running 2ms (inferred)"));
 
         // Unknown session, malformed stdin, and traversal ids all read as
         // not-recording rather than erroring or escaping the store.
@@ -528,17 +610,30 @@ mod tests {
             r#"{"session_id":"../escape"}"#,
             r#"{"session_id":""}"#,
         ] {
-            assert_eq!(witness_segment(stdin, root), SEG_NOT_RECORDING);
+            assert_eq!(witness_segment(stdin, root, TS), SEG_NOT_RECORDING);
         }
+    }
+
+    #[test]
+    fn witness_segment_discloses_corrupt_lines_without_counting_them_as_events() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let dir = root.join("sess-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(EVENTS_FILE), "{}\n{}\n{}\n").unwrap();
+
+        let seg = witness_segment(r#"{"session_id":"sess-1"}"#, root, TS);
+        assert_eq!(
+            seg,
+            format!("{SEG_RECORDING} 0ev idle - (inferred) 3 corrupt")
+        );
     }
 
     #[tokio::test]
     async fn render_composes_wrapped_output_before_ours() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        let dir = root.join("s");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(EVENTS_FILE), "{}\n").unwrap();
+        record_events(root, "s", &[(TS, agent_witness_core::EventKind::Stop)]);
 
         let wrapped = wrapped_command("printf 'THEIRS\\nextra'").unwrap();
         let payload = wrapped
@@ -551,7 +646,10 @@ mod tests {
             .to_string();
 
         let line = render(r#"{"session_id":"s"}"#, root, Some(&payload)).await;
-        assert_eq!(line, format!("THEIRS{SEG_SEPARATOR}{SEG_RECORDING} 1ev"));
+        assert!(
+            line.starts_with(&format!("THEIRS{SEG_SEPARATOR}{SEG_RECORDING} 1ev idle")),
+            "{line}"
+        );
     }
 
     #[tokio::test]
