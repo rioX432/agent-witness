@@ -47,6 +47,34 @@ pub struct Activity {
     pub attribution: Attribution,
 }
 
+/// The state one event moves a session to, or `None` when the event says
+/// nothing about activity (an `Error`, or a `Notification` that is not a wait).
+/// Permission requests are not paired with decisions, so any other event
+/// (including a parallel tool's result) counts as resumed activity.
+pub fn event_activity(event: &AgentEvent) -> Option<ActivityState> {
+    Some(match event.kind {
+        EventKind::PermissionRequest => ActivityState::WaitingPermission,
+        EventKind::Notification => match event
+            .payload
+            .get("notification_type")
+            .and_then(|v| v.as_str())
+        {
+            Some("permission_prompt") => ActivityState::WaitingPermission,
+            Some(
+                "idle_prompt"
+                | "agent_needs_input"
+                | "elicitation_dialog"
+                | "elicitation_url_dialog",
+            ) => ActivityState::WaitingInput,
+            // Unrelated notifications do not establish resumed activity.
+            _ => return None,
+        },
+        EventKind::Stop | EventKind::SessionEnd | EventKind::Interrupt => ActivityState::Idle,
+        EventKind::Error => return None,
+        _ => ActivityState::Running,
+    })
+}
+
 /// Derive transitions in append order, without pairing permission requests.
 pub fn activity_inputs(events: &[AgentEvent]) -> ActivityInputs {
     let has_hooks = events.iter().any(|event| event.source == Source::Hooks);
@@ -59,27 +87,10 @@ pub fn activity_inputs(events: &[AgentEvent]) -> ActivityInputs {
         .iter()
         .filter(|event| !has_hooks || event.source == Source::Hooks)
     {
-        let next = match event.kind {
-            EventKind::PermissionRequest => ActivityState::WaitingPermission,
-            EventKind::Notification => match event
-                .payload
-                .get("notification_type")
-                .and_then(|v| v.as_str())
-            {
-                Some("permission_prompt") => ActivityState::WaitingPermission,
-                Some(
-                    "idle_prompt"
-                    | "agent_needs_input"
-                    | "elicitation_dialog"
-                    | "elicitation_url_dialog",
-                ) => ActivityState::WaitingInput,
-                // Unrelated notifications do not establish resumed activity.
-                _ => continue,
-            },
-            EventKind::Stop | EventKind::SessionEnd | EventKind::Interrupt => ActivityState::Idle,
-            EventKind::Error => continue,
-            _ => ActivityState::Running,
+        let Some(next) = event_activity(event) else {
+            continue;
         };
+        // A repeated state keeps its original start so the age counts the whole wait.
         if next != inputs.state || inputs.since_ms.is_none() {
             inputs.since_ms = Some(event.ts);
         }
@@ -401,5 +412,42 @@ mod tests {
         // now < last_event_ts: saturating_sub yields 0, which is within window.
         let i = inputs(false, Some(NOW + 1_000));
         assert!(is_live(i, NOW, DEFAULT_LIVE_WINDOW_MS));
+    }
+
+    #[test]
+    fn elicitation_notifications_map_to_waiting_input() {
+        for kind in ["elicitation_dialog", "elicitation_url_dialog"] {
+            let event = signal(1, EventKind::Notification, Some(kind));
+            assert_eq!(
+                event_activity(&event),
+                Some(ActivityState::WaitingInput),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_notification_and_error_do_not_move_state_or_start() {
+        const WAIT_TS: i64 = 100;
+        for ignored in [
+            signal(200, EventKind::Notification, Some("auth_success")),
+            signal(201, EventKind::Notification, None),
+            signal(202, EventKind::Error, None),
+        ] {
+            assert_eq!(event_activity(&ignored), None);
+            let events = [signal(WAIT_TS, EventKind::PermissionRequest, None), ignored];
+            let inputs = activity_inputs(&events);
+            assert_eq!(inputs.state, ActivityState::WaitingPermission);
+            assert_eq!(inputs.since_ms, Some(WAIT_TS));
+            assert_eq!(inputs.last_activity_ms, Some(WAIT_TS));
+        }
+    }
+
+    #[test]
+    fn no_events_is_idle_with_no_start() {
+        let inputs = activity_inputs(&[]);
+        assert_eq!(inputs.state, ActivityState::Idle);
+        assert_eq!(inputs.since_ms, None);
+        assert_eq!(inputs.last_activity_ms, None);
     }
 }

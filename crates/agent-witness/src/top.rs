@@ -185,15 +185,8 @@ fn running_tool(events: &[AgentEvent]) -> Option<String> {
     let after_signal = events
         .iter()
         .rposition(|event| {
-            matches!(
-                event.kind,
-                agent_witness_core::EventKind::PermissionRequest
-                    | agent_witness_core::EventKind::PermissionDenied
-                    | agent_witness_core::EventKind::Interrupt
-                    | agent_witness_core::EventKind::Stop
-                    | agent_witness_core::EventKind::SessionEnd
-                    | agent_witness_core::EventKind::Notification
-            )
+            agent_witness_core::event_activity(event)
+                .is_some_and(|state| state != agent_witness_core::ActivityState::Running)
         })
         .map_or(0, |index| index + 1);
     build_timeline(&events[after_signal..])
@@ -483,6 +476,43 @@ mod tests {
         assert_eq!(rows[0].activity.since_ms, Some(CREATED + 1_000));
         assert_eq!(rows[0].activity.age_ms, Some(now - CREATED - 1_000));
         assert!(rows[0].running_tool.is_none());
+    }
+
+    #[test]
+    fn running_tool_survives_unrelated_notification_and_returns_after_a_wait() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("tools", CREATED).unwrap();
+        let call = |ts, id| {
+            ev(
+                ts,
+                EventKind::ToolCall,
+                json!({"tool_name":"Bash", "tool_use_id": id}),
+            )
+        };
+        writer.append(&call(CREATED, "t1")).unwrap();
+        writer
+            .append(&ev(
+                CREATED + 1_000,
+                EventKind::Notification,
+                json!({"notification_type":"auth_success"}),
+            ))
+            .unwrap();
+        let rows = collect_top_rows(&store, CREATED + 2_000, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        assert_eq!(rows[0].activity.state, ActivityState::Running);
+        assert!(rows[0].running_tool.is_some());
+
+        writer
+            .append(&ev(
+                CREATED + 3_000,
+                EventKind::PermissionRequest,
+                json!({"tool_name":"Bash"}),
+            ))
+            .unwrap();
+        writer.append(&call(CREATED + 4_000, "t2")).unwrap();
+        let rows = collect_top_rows(&store, CREATED + 5_000, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        assert_eq!(rows[0].activity.state, ActivityState::Running);
+        assert!(rows[0].running_tool.is_some());
     }
 
     #[test]

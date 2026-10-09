@@ -564,19 +564,43 @@ mod tests {
         assert!(!running.contains("waiting:"));
     }
 
+    /// Append one valid hook event per kind to `session` under `root`.
+    fn record_events(root: &Path, session: &str, kinds: &[(i64, agent_witness_core::EventKind)]) {
+        use agent_witness_core::{
+            AgentEvent, Attribution, SessionStore, Source, CONFIDENCE_CERTAIN,
+        };
+        let mut writer = SessionStore::new(root).open(session, TS).unwrap();
+        for (ts, kind) in kinds {
+            let event = AgentEvent::new(
+                *ts,
+                session,
+                Source::Hooks,
+                *kind,
+                Attribution::Direct,
+                CONFIDENCE_CERTAIN,
+                json!({}),
+            );
+            writer.append(&event).unwrap();
+        }
+    }
+
     #[test]
-    fn witness_segment_counts_events_and_flags_silence() {
+    fn witness_segment_counts_valid_events_and_flags_silence() {
+        use agent_witness_core::EventKind;
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        let dir = root.join("sess-1");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(EVENTS_FILE), "{}\n{}\n{}\n").unwrap();
-
-        let seg = witness_segment(r#"{"session_id":"sess-1"}"#, root, TS);
-        assert_eq!(
-            seg,
-            format!("{SEG_RECORDING} 0ev idle - (inferred) 3 corrupt")
+        record_events(
+            root,
+            "sess-1",
+            &[
+                (TS, EventKind::ToolCall),
+                (TS + 1, EventKind::ToolResult),
+                (TS + 2, EventKind::ToolCall),
+            ],
         );
+
+        let seg = witness_segment(r#"{"session_id":"sess-1"}"#, root, TS + 2);
+        assert_eq!(seg, format!("{SEG_RECORDING} 3ev running 2ms (inferred)"));
 
         // Unknown session, malformed stdin, and traversal ids all read as
         // not-recording rather than erroring or escaping the store.
@@ -590,13 +614,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn witness_segment_discloses_corrupt_lines_without_counting_them_as_events() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let dir = root.join("sess-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(EVENTS_FILE), "{}\n{}\n{}\n").unwrap();
+
+        let seg = witness_segment(r#"{"session_id":"sess-1"}"#, root, TS);
+        assert_eq!(
+            seg,
+            format!("{SEG_RECORDING} 0ev idle - (inferred) 3 corrupt")
+        );
+    }
+
     #[tokio::test]
     async fn render_composes_wrapped_output_before_ours() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        let dir = root.join("s");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(EVENTS_FILE), "{}\n").unwrap();
+        record_events(root, "s", &[(TS, agent_witness_core::EventKind::Stop)]);
 
         let wrapped = wrapped_command("printf 'THEIRS\\nextra'").unwrap();
         let payload = wrapped
@@ -609,9 +646,9 @@ mod tests {
             .to_string();
 
         let line = render(r#"{"session_id":"s"}"#, root, Some(&payload)).await;
-        assert_eq!(
-            line,
-            format!("THEIRS{SEG_SEPARATOR}{SEG_RECORDING} 0ev idle - (inferred) 1 corrupt")
+        assert!(
+            line.starts_with(&format!("THEIRS{SEG_SEPARATOR}{SEG_RECORDING} 1ev idle")),
+            "{line}"
         );
     }
 
