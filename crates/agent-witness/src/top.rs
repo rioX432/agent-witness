@@ -185,8 +185,10 @@ fn running_tool(events: &[AgentEvent]) -> Option<String> {
     let after_signal = events
         .iter()
         .rposition(|event| {
-            agent_witness_core::event_activity(event)
-                .is_some_and(|state| state != agent_witness_core::ActivityState::Running)
+            // A denied call never gets a result, so it must not read as still running.
+            event.kind == agent_witness_core::EventKind::PermissionDenied
+                || agent_witness_core::event_activity(event)
+                    .is_some_and(|state| state != agent_witness_core::ActivityState::Running)
         })
         .map_or(0, |index| index + 1);
     build_timeline(&events[after_signal..])
@@ -509,10 +511,35 @@ mod tests {
                 json!({"tool_name":"Bash"}),
             ))
             .unwrap();
+        let rows = collect_top_rows(&store, CREATED + 3_500, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        assert!(rows[0].running_tool.is_none(), "t1 predates the wait");
         writer.append(&call(CREATED + 4_000, "t2")).unwrap();
         let rows = collect_top_rows(&store, CREATED + 5_000, DEFAULT_LIVE_WINDOW_MS).unwrap();
         assert_eq!(rows[0].activity.state, ActivityState::Running);
         assert!(rows[0].running_tool.is_some());
+    }
+
+    #[test]
+    fn denied_tool_call_is_not_reported_as_running() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path());
+        let mut writer = store.open("denied", CREATED).unwrap();
+        writer
+            .append(&ev(
+                CREATED,
+                EventKind::ToolCall,
+                json!({"tool_name":"Bash", "tool_use_id":"t1"}),
+            ))
+            .unwrap();
+        writer
+            .append(&ev(
+                CREATED + 1_000,
+                EventKind::PermissionDenied,
+                json!({"tool_name":"Bash"}),
+            ))
+            .unwrap();
+        let rows = collect_top_rows(&store, CREATED + 2_000, DEFAULT_LIVE_WINDOW_MS).unwrap();
+        assert!(rows[0].running_tool.is_none());
     }
 
     #[test]
