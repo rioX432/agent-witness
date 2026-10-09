@@ -165,6 +165,7 @@ pub struct TestActivity {
     pub ok: usize,
     /// Of all test-like commands, those with a `failed` result.
     pub failed: usize,
+    /// Of all test-like commands, those the user interrupted.
     pub interrupted: usize,
     pub completed: usize,
     /// Of all test-like commands, those with no paired result (outcome not
