@@ -33,3 +33,7 @@ pr-run-mode = "plan"
 install-updater = false
 # Path that installers should place binaries in.
 install-path = "CARGO_HOME"
+
+# macos-14 images were retired from GitHub Actions on 2026-11-02; dist 0.32.0 still picks macos-14 for this target.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
